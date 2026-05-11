@@ -1,0 +1,531 @@
+// Package agent implements the Agent loop for DMR.
+// It orchestrates multi-turn LLM conversations with automatic tool execution.
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/seanly/dmr-devkit/client"
+	"github.com/seanly/dmr-devkit/config"
+	"github.com/seanly/dmr-devkit/core"
+	"github.com/seanly/dmr-devkit/tape"
+	"github.com/seanly/dmr-devkit/tool"
+)
+
+const defaultToolResultMaxChars = 120000
+
+// Config configures the Agent.
+type Config struct {
+	MaxSteps     int
+	AgentPolicy  config.AgentConfig // YAML agent section: defaults for context handoff + completion cap resolution
+	SystemPrompt string
+	// SystemPromptBase is the resolved agent system prompt from config only (no plugin fragments).
+	// When plugins register SystemPrompt hooks, the loop refreshes SystemPrompt from Base each LLM step.
+	SystemPromptBase string
+	// SystemPromptBases maps tape name glob patterns to resolved prompt strings.
+	// Used by systemPromptBaseForTape() to select per-tape system prompts.
+	SystemPromptBases map[string]string
+	// TapeModels maps tape name glob patterns to model names for per-tape model selection.
+	TapeModels map[string]string
+	Tools      []*tool.Tool
+	Workspace  string
+	Verbose    int
+	Models     []config.ModelConfig
+	OnToolCall func(event ToolCallEvent) // optional callback for tool call display
+}
+
+// Agent orchestrates multi-turn LLM + tool execution.
+type Agent struct {
+	defaultChat *client.ChatClient // default ChatClient when no per-tape override
+	tape        *tape.TapeManager
+	hooks       Hooks
+	config      Config
+	executor    *tool.ToolExecutor
+
+	mu              sync.RWMutex
+	chatClients     map[string]*client.ChatClient // per-tape ChatClient cache
+	sessionStarted  map[string]bool               // tracks whether session/start anchor was written per tape
+	modelOverrides  map[string]string             // per-tape model override: tape -> model name
+	lastCompactStep map[string]int                // tracks last compact step per tape
+	discoveredTools map[string]bool               // discovered deferred tool names (key: "tape:toolName")
+
+	toolsCacheMu sync.RWMutex
+	toolsCache   map[string][]*tool.Tool // per-tape tool list cache
+
+	onToolCallMu      sync.RWMutex // protects config.OnToolCall
+	extendedTools     []*tool.Tool // cached extended tools from all plugins
+	extendedToolsOnce sync.Once    // ensure extended tools are loaded once
+
+	// Precomputed sorted prompt bases and tape models for fast lookup
+	precomputedPromptBases []struct{ pattern, prompt string }
+	precomputedTapeModels  []struct{ pattern, model string }
+}
+
+// New creates a new Agent.
+// hooks may be nil for a minimal loop (no plugin extensions); otherwise pass an implementation
+// such as *plugin.Manager from pkg/plugin.
+func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config) *Agent {
+	if cfg.MaxSteps == 0 {
+		cfg.MaxSteps = 20
+	}
+	if hooks == nil {
+		hooks = noopHooks{}
+	}
+	a := &Agent{
+		defaultChat:     chat,
+		tape:            tm,
+		hooks:           hooks,
+		config:          cfg,
+		chatClients:     make(map[string]*client.ChatClient),
+		sessionStarted:  make(map[string]bool),
+		modelOverrides:  make(map[string]string),
+		lastCompactStep: make(map[string]int),
+		discoveredTools: make(map[string]bool),
+		toolsCache:      make(map[string][]*tool.Tool),
+	}
+	a.precomputePromptBases()
+	a.precomputeTapeModels()
+	return a
+}
+
+// SetOnToolCall sets the callback for tool call display.
+func (a *Agent) SetOnToolCall(fn func(ToolCallEvent)) {
+	a.onToolCallMu.Lock()
+	a.config.OnToolCall = fn
+	a.onToolCallMu.Unlock()
+}
+
+// SetExecutor stores the tool executor reference for rebuilding chat clients.
+func (a *Agent) SetExecutor(e *tool.ToolExecutor) {
+	a.executor = e
+}
+
+func (a *Agent) precomputePromptBases() {
+	patterns := make([]string, 0, len(a.config.SystemPromptBases))
+	for p := range a.config.SystemPromptBases {
+		patterns = append(patterns, p)
+	}
+	sort.Slice(patterns, func(i, j int) bool { return len(patterns[i]) > len(patterns[j]) })
+	a.precomputedPromptBases = make([]struct{ pattern, prompt string }, 0, len(patterns))
+	for _, p := range patterns {
+		a.precomputedPromptBases = append(a.precomputedPromptBases, struct{ pattern, prompt string }{p, a.config.SystemPromptBases[p]})
+	}
+}
+
+// systemPromptBaseForTape returns the base system prompt for a given tape name.
+// Matches against SystemPromptBases glob patterns; falls back to SystemPromptBase.
+// Patterns are sorted by length descending so the most specific match wins.
+func (a *Agent) systemPromptBaseForTape(tapeName string) string {
+	for _, entry := range a.precomputedPromptBases {
+		if matched, _ := path.Match(entry.pattern, tapeName); matched {
+			return entry.prompt
+		}
+	}
+	return a.config.SystemPromptBase
+}
+
+func (a *Agent) precomputeTapeModels() {
+	patterns := make([]string, 0, len(a.config.TapeModels))
+	for p := range a.config.TapeModels {
+		patterns = append(patterns, p)
+	}
+	sort.Slice(patterns, func(i, j int) bool { return len(patterns[i]) > len(patterns[j]) })
+	a.precomputedTapeModels = make([]struct{ pattern, model string }, 0, len(patterns))
+	for _, p := range patterns {
+		a.precomputedTapeModels = append(a.precomputedTapeModels, struct{ pattern, model string }{p, a.config.TapeModels[p]})
+	}
+}
+
+// modelNameForTape returns the model name for a given tape based on glob matching.
+// Returns empty string if no match (caller should use default model).
+// Patterns are sorted by length descending so the most specific match wins.
+func (a *Agent) modelNameForTape(tapeName string) string {
+	for _, entry := range a.precomputedTapeModels {
+		if matched, _ := path.Match(entry.pattern, tapeName); matched {
+			return entry.model
+		}
+	}
+	return ""
+}
+
+// AllModels returns all configured models.
+func (a *Agent) AllModels() []config.ModelConfig {
+	return a.config.Models
+}
+
+// AllModelInfos returns all models as [ModelInfo] (implements [RuntimeAgent]).
+func (a *Agent) AllModelInfos() []ModelInfo {
+	infos := make([]ModelInfo, len(a.config.Models))
+	for i, m := range a.config.Models {
+		infos[i] = ModelInfo{Name: m.Name, Model: m.Model}
+	}
+	return infos
+}
+
+// GetCurrentModelName returns the name and model ID for the given tape (implements [RuntimeAgent]).
+func (a *Agent) GetCurrentModelName(tapeName string) (string, string) {
+	m := a.GetCurrentModel(tapeName)
+	if m == nil {
+		return "", ""
+	}
+	return m.Name, m.Model
+}
+
+// GetCurrentModel returns the model in use for the given tape.
+func (a *Agent) GetCurrentModel(tapeName string) *config.ModelConfig {
+	a.mu.RLock()
+	name, ok := a.modelOverrides[tapeName]
+	a.mu.RUnlock()
+	if ok {
+		for i := range a.config.Models {
+			if a.config.Models[i].Name == name {
+				return &a.config.Models[i]
+			}
+		}
+	}
+	for i := range a.config.Models {
+		if a.config.Models[i].Default {
+			return &a.config.Models[i]
+		}
+	}
+	if len(a.config.Models) > 0 {
+		return &a.config.Models[0]
+	}
+	return nil
+}
+
+// SwitchModel switches the model for the given tape (in-memory only).
+func (a *Agent) SwitchModel(tapeName, modelName string) error {
+	for i := range a.config.Models {
+		m := &a.config.Models[i]
+		if m.Name == modelName || m.Model == modelName {
+			cc := a.buildChatClient(m)
+			a.mu.Lock()
+			a.modelOverrides[tapeName] = m.Name
+			a.mu.Unlock()
+			a.storeChatClient(tapeName, cc)
+			return nil
+		}
+	}
+	return core.NewError(core.ErrConfig, fmt.Sprintf("model not found: %s", modelName), nil)
+}
+
+const maxChatClients = 100
+const maxToolsCache = 100
+
+func (a *Agent) storeChatClient(tapeName string, cc *client.ChatClient) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.chatClients) >= maxChatClients {
+		for k := range a.chatClients {
+			delete(a.chatClients, k)
+			break
+		}
+	}
+	a.chatClients[tapeName] = cc
+}
+
+// RestartProcess sends SIGHUP to the current process to trigger a hot restart
+// (config reload + plugin re-initialization) without killing the process.
+// Falls back to SIGTERM if SIGHUP is not available.
+func (a *Agent) RestartProcess() error {
+	slog.Info("dmr: ,restart command — sending SIGHUP to self for hot restart")
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return p.Signal(syscall.SIGHUP)
+}
+
+// buildChatClient creates a new ChatClient for the given model config
+func (a *Agent) buildChatClient(model *config.ModelConfig) *client.ChatClient {
+	httpHdr, httpClient := model.HTTPTimeouts()
+	llmCore := core.NewLLMCore(core.LLMCoreConfig{
+		Model:                     model.Model,
+		APIKey:                    model.APIKey,
+		APIBase:                   model.APIBase,
+		TokenURL:                  model.TokenURL,
+		ClientID:                  model.ClientID,
+		ClientSecret:              model.ClientSecret,
+		Headers:                   model.Headers,
+		HTTPResponseHeaderTimeout: httpHdr,
+		HTTPClientTimeout:         httpClient,
+		MaxRetries:                3,
+		Verbose:                   a.config.Verbose,
+	})
+	return client.NewChatClient(llmCore, a.executor, a.tape)
+}
+
+// getChatClient returns the ChatClient for the given tape.
+// If the tape has a model override, returns a per-tape client; otherwise returns the default client.
+func (a *Agent) getChatClient(tapeName string) *client.ChatClient {
+	a.mu.RLock()
+	cc, hasCached := a.chatClients[tapeName]
+	modelName, hasOverride := a.modelOverrides[tapeName]
+	a.mu.RUnlock()
+
+	if hasCached {
+		return cc
+	}
+
+	if hasOverride {
+		for i := range a.config.Models {
+			if a.config.Models[i].Name == modelName {
+				cc = a.buildChatClient(&a.config.Models[i])
+				a.storeChatClient(tapeName, cc)
+				return cc
+			}
+		}
+	}
+
+	// Use default client
+	return a.defaultChat
+}
+
+func (a *Agent) handoffContextLimit(tapeName string) int {
+	m := a.GetCurrentModel(tapeName)
+	if m == nil {
+		return 0
+	}
+	return m.ResolveContextLimit(a.config.AgentPolicy)
+}
+
+// ContextTokenBudget returns the configured prompt-token budget used by proactive handoff
+// (i.e. the same value as handoffContextLimit, exposed for UI telemetry).
+func (a *Agent) ContextTokenBudget(tapeName string) int {
+	return a.handoffContextLimit(tapeName)
+}
+
+// shouldCompactNow checks whether a compact is allowed at the given step.
+// It enforces a minimum 3-step gap between compacts for the same tape,
+// and resets if the step counter wraps (new conversation cycle).
+func (a *Agent) shouldCompactNow(tapeName string, step int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	lastCompact, hasCompacted := a.lastCompactStep[tapeName]
+	// If current step < last recorded step, it's a new conversation cycle — reset.
+	if hasCompacted && step < lastCompact {
+		delete(a.lastCompactStep, tapeName)
+		return true
+	}
+	return !hasCompacted || step-lastCompact >= 3
+}
+
+// recordCompactStep records that a compact occurred at the given step.
+func (a *Agent) recordCompactStep(tapeName string, step int) {
+	a.mu.Lock()
+	a.lastCompactStep[tapeName] = step
+	a.mu.Unlock()
+}
+
+func (a *Agent) handoffThreshold(tapeName string) float64 {
+	m := a.GetCurrentModel(tapeName)
+	if m == nil {
+		return 0.8
+	}
+	return m.ResolveHandoffThreshold(a.config.AgentPolicy)
+}
+
+func (a *Agent) completionMaxTokensForTape(tapeName string) int {
+	m := a.GetCurrentModel(tapeName)
+	if m == nil {
+		return 0
+	}
+	return m.ResolveCompletionMaxTokens(a.config.AgentPolicy)
+}
+
+// toolResultMaxCharsForTape resolves the effective truncation threshold for
+// role="tool" content for a given tape.
+//
+// Priority:
+//  1. model.ToolResultMaxChars (0=unset, -1=disable)
+//  2. agent.AgentPolicy.ToolResultMaxChars (0=unset, -1=disable)
+//  3. Auto-calculated based on max_token and handoff_threshold
+//  4. defaultToolResultMaxChars (currently 120000)
+func (a *Agent) toolResultMaxCharsForTape(tapeName string) int {
+	m := a.GetCurrentModel(tapeName)
+
+	// 1. If user explicitly configured, use it
+	if m != nil && m.ToolResultMaxChars != 0 {
+		return m.ToolResultMaxChars
+	}
+	if a.config.AgentPolicy.ToolResultMaxChars != 0 {
+		return a.config.AgentPolicy.ToolResultMaxChars
+	}
+
+	// 2. Auto-calculate based on max_token and handoff_threshold
+	if m != nil && m.MaxToken > 0 {
+		threshold := m.ResolveHandoffThreshold(a.config.AgentPolicy)
+
+		// Calculation logic:
+		// - When handoff triggers, history occupies max_token * threshold
+		// - Space left for tool result = max_token * (1 - threshold)
+		// - Reserve 20% safety margin
+		// - 1 token ≈ 4 chars (may vary by language)
+		availableTokens := int(float64(m.MaxToken) * (1 - threshold) * 0.8)
+		maxChars := availableTokens * 4
+
+		slog.Info("auto-calculated tool_result_max_chars", "model", m.Name, "max_chars", maxChars, "max_token", m.MaxToken, "threshold", threshold)
+
+		return maxChars
+	}
+
+	// 3. Fallback to default
+	return defaultToolResultMaxChars
+}
+
+// shouldAutoHandoff checks if prompt_tokens exceed the configured threshold for this tape's model.
+func (a *Agent) shouldAutoHandoff(tapeName string, latestUsage map[string]any) bool {
+	limit := a.handoffContextLimit(tapeName)
+	if limit <= 0 || latestUsage == nil {
+		return false
+	}
+	pt, ok := intFromUsageMap(latestUsage, "prompt_tokens")
+	if !ok {
+		return false
+	}
+	th := a.handoffThreshold(tapeName)
+	return float64(pt) >= float64(limit)*th
+}
+
+// shouldAutoHandoffByEstimate checks if estimated tokens exceed the threshold.
+// This is used for preemptive compact before calling the API.
+func (a *Agent) shouldAutoHandoffByEstimate(tapeName string, estimatedTokens int) bool {
+	limit := a.handoffContextLimit(tapeName)
+	if limit <= 0 || estimatedTokens <= 0 {
+		return false
+	}
+	th := a.handoffThreshold(tapeName)
+	return float64(estimatedTokens) >= float64(limit)*th
+}
+
+// estimateContextTokens estimates the token count for the current tape context.
+// Returns 0 if estimation fails.
+func (a *Agent) estimateContextTokens(tapeName string, tapeCtx *tape.TapeContext) int {
+	// Read messages from tape
+	messages, err := a.tape.ReadMessages(tapeName, tapeCtx)
+	if err != nil {
+		slog.Warn("failed to read messages for token estimation", "error", err)
+		return 0
+	}
+
+	if len(messages) == 0 {
+		return 0
+	}
+
+	// Use TokenEstimator for estimation
+	estimator := NewTokenEstimator()
+	estimatedTokens := estimator.Estimate(messages)
+
+	slog.Debug("estimated context tokens", "tape", tapeName, "tokens", estimatedTokens)
+	return estimatedTokens
+}
+
+func intFromUsageMap(u map[string]any, key string) (int, bool) {
+	v, ok := u[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+// ========== Tool Discovery Methods ==========
+
+// IsToolDiscovered checks if a deferred tool has been discovered for the tape.
+func (a *Agent) IsToolDiscovered(tapeName, toolName string) bool {
+	key := tapeName + ":" + toolName
+	a.mu.RLock()
+	discovered := a.discoveredTools[key]
+	a.mu.RUnlock()
+	return discovered
+}
+
+// DiscoverTool marks a tool as discovered for the tape.
+func (a *Agent) DiscoverTool(tapeName, toolName string) {
+	key := tapeName + ":" + toolName
+	a.mu.Lock()
+	a.discoveredTools[key] = true
+	a.mu.Unlock()
+	a.toolsCacheMu.Lock()
+	delete(a.toolsCache, tapeName)
+	a.toolsCacheMu.Unlock()
+	if a.config.Verbose >= 1 {
+		slog.Info("agent: tool discovered", "tool", toolName, "tape", tapeName)
+	}
+}
+
+// GetAllExtendedTools returns all extended tools from plugins (cached).
+func (a *Agent) GetAllExtendedTools() []*tool.Tool {
+	a.extendedToolsOnce.Do(func() {
+		a.extendedTools = a.hooks.CollectAllTools(context.Background(), false, true)
+		if a.config.Verbose >= 1 {
+			slog.Info("agent: loaded extended tools", "count", len(a.extendedTools))
+		}
+	})
+	return a.extendedTools
+}
+
+// SearchTools searches for extended tools matching the query.
+func (a *Agent) SearchTools(query string) []*tool.Tool {
+	extended := a.GetAllExtendedTools()
+	return tool.SearchTools(extended, query)
+}
+
+// Handoff creates an anchor and clears discovered tools for the tape.
+// This should be used instead of tape.Handoff() to ensure tool discovery
+// state is properly reset on handoff.
+func (a *Agent) Handoff(tapeName, name string, state map[string]any) {
+	a.ClearDiscoveredTools(tapeName)
+	if _, err := a.tape.Handoff(tapeName, name, state); err != nil {
+		slog.Warn("tape handoff failed", "name", name, "error", err)
+	}
+}
+
+// ClearDiscoveredTools clears all discovered tool state for a tape.
+// This resets the tool discovery state, requiring tools to be re-discovered
+// via toolSearch before they can be used again.
+func (a *Agent) ClearDiscoveredTools(tapeName string) {
+	prefix := tapeName + ":"
+	a.mu.Lock()
+	count := 0
+	for k := range a.discoveredTools {
+		if strings.HasPrefix(k, prefix) {
+			delete(a.discoveredTools, k)
+			count++
+		}
+	}
+	a.mu.Unlock()
+
+	a.toolsCacheMu.Lock()
+	delete(a.toolsCache, tapeName)
+	a.toolsCacheMu.Unlock()
+
+	if a.config.Verbose >= 1 {
+		slog.Info("agent: cleared discovered tools", "count", count, "tape", tapeName)
+	}
+
+	// Notify hooks so they can reset per-tape state (e.g. search counters)
+	_ = a.hooks.OnDiscoveredToolsCleared(context.Background(), tapeName)
+}

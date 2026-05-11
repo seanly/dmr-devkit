@@ -1,0 +1,499 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/seanly/dmr-devkit/client"
+	"github.com/seanly/dmr-devkit/core"
+	"github.com/seanly/dmr-devkit/tape"
+	"github.com/seanly/dmr-devkit/tool"
+)
+
+// runMode holds optional behavior for a single agent run (e.g. subagent delegation).
+type runMode struct {
+	tapeContextOverride *tape.TapeContext
+	maxSteps            int // 0 = use Config.MaxSteps only; otherwise min(Config.MaxSteps, maxSteps)
+	excludeToolNames    map[string]struct{}
+	allowedToolNames    map[string]struct{} // if non-empty, only these tools may be used
+}
+
+// Run executes the agent loop: LLM call -> tool execution -> repeat.
+func (a *Agent) Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32) (*Result, error) {
+	return a.RunWithOpts(ctx, tapeName, prompt, historyAfterEntryID, 0, "")
+}
+
+// RunWithContext executes the agent loop with optional plugin context.
+// contextJSON is a JSON-encoded map[string]any that is passed to tool calls.
+func (a *Agent) RunWithContext(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, contextJSON string) (*Result, error) {
+	return a.RunWithOpts(ctx, tapeName, prompt, historyAfterEntryID, 0, contextJSON)
+}
+
+// RunWithOpts executes the agent loop with optional max step limit and plugin context.
+func (a *Agent) RunWithOpts(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, contextJSON string) (*Result, error) {
+	return a.RunWithOptsAndTools(ctx, tapeName, prompt, historyAfterEntryID, maxSteps, nil, contextJSON)
+}
+
+// RunWithOptsAndTools executes the agent loop with max steps, allowed tool whitelist, and plugin context.
+func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools []string, contextJSON string) (*Result, error) {
+	var mode *runMode
+	if maxSteps > 0 || len(allowedTools) > 0 {
+		mode = &runMode{maxSteps: maxSteps}
+	}
+	if len(allowedTools) > 0 {
+		mode.allowedToolNames = make(map[string]struct{}, len(allowedTools))
+		for _, name := range allowedTools {
+			mode.allowedToolNames[name] = struct{}{}
+		}
+	}
+	result, toolIterations, err := a.run(ctx, tapeName, prompt, historyAfterEntryID, mode, contextJSON)
+
+	// Notify hooks that an agent run completed (used by webserver for SSE push)
+	turn := a.countUserTurns(tapeName)
+	_ = a.hooks.AfterAgentRun(ctx, AfterAgentRunArgs{
+		TapeName:       tapeName,
+		Turn:           turn,
+		ToolIterations: toolIterations,
+	})
+
+	return result, err
+}
+
+func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, mode *runMode, contextJSON string) (*Result, int, error) {
+	// Auto-apply per-tape model from config (first time only; respects runtime ,model.switch).
+	a.mu.RLock()
+	_, hasOverride := a.modelOverrides[tapeName]
+	a.mu.RUnlock()
+	if !hasOverride {
+		if modelName := a.modelNameForTape(tapeName); modelName != "" {
+			if err := a.SwitchModel(tapeName, modelName); err != nil {
+				slog.Warn("tape model override failed", "model", modelName, "tape", tapeName, "error", err)
+			}
+		}
+	}
+
+	toolIterations := 0
+
+	// InterceptInput hook: let extensions handle commands before LLM
+	ir, err := a.hooks.InterceptInput(ctx, InterceptInputArgs{
+		TapeName:     tapeName,
+		Prompt:       prompt,
+		Workspace:    a.config.Workspace,
+		TapeStore:    a.tape.Store,
+		TapeManager:  a.tape,
+		RuntimeAgent: a,
+	})
+	if err != nil {
+		kind := core.ErrUnknown
+		var re *core.RepublicError
+		if errors.As(err, &re) {
+			kind = re.Kind
+		}
+		return nil, 0, core.NewError(kind, fmt.Sprintf("intercept: %v", err), err)
+	}
+	if ir != nil {
+		if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("command", map[string]any{
+			"raw":    prompt,
+			"output": ir.Output,
+			"status": "ok",
+		})); err != nil {
+			slog.Warn("tape append failed", "tape", tapeName, "error", err)
+		}
+		return &Result{Output: ir.Output, Steps: 0}, 0, nil
+	}
+
+	// Collect tools from plugins (with discovery support)
+	tools := a.collectToolsWithDiscovery(ctx, tapeName)
+	tools = filterExcludedTools(tools, mode)
+
+	toolCtx := tool.NewToolContext(ctx, tapeName, "")
+	toolCtx.Workspace = a.config.Workspace
+	toolCtx.State[tool.StateKeyRuntimeWorkspace] = a.config.Workspace // backward compat
+	toolCtx.State[tool.StateKeyTapeStore] = a.tape.Store
+	toolCtx.State[tool.StateKeyTapeManager] = a.tape
+	toolCtx.State[tool.StateKeyRuntimeAgent] = a
+
+	// Parse and set plugin context if provided
+	if contextJSON != "" {
+		var pluginContext map[string]any
+		if err := json.Unmarshal([]byte(contextJSON), &pluginContext); err == nil {
+			toolCtx.Context = pluginContext
+		} else {
+			slog.Warn("agent: failed to parse plugin context JSON", "error", err)
+		}
+	}
+
+	currentPrompt := prompt
+	consecutiveDenies := 0
+	autoHandoffDone := false
+	histAfter := int(historyAfterEntryID)
+
+	// Record session anchor only if tape has no anchors yet (bootstrap)
+	a.mu.Lock()
+	alreadyStarted := a.sessionStarted[tapeName]
+	if !alreadyStarted {
+		a.sessionStarted[tapeName] = true
+	}
+	a.mu.Unlock()
+	if !alreadyStarted {
+		anchors, _ := a.tape.Store.FetchAll(tapeName, &tape.FetchOpts{Kinds: []string{"anchor"}})
+		if len(anchors) == 0 {
+			a.Handoff(tapeName, "session/start", map[string]any{"owner": "human"})
+		}
+	}
+	systemPrompt := a.resolveSystemPrompt(ctx, tapeName)
+	if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
+		slog.Warn("tape append failed", "tape", tapeName, "error", err)
+	}
+	if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{"role": "user", "content": prompt})); err != nil {
+		slog.Warn("tape append failed", "tape", tapeName, "error", err)
+	}
+
+	lastPromptTokens := 0
+	lastCompletionTokens := 0
+
+	maxSteps := a.config.MaxSteps
+	if mode != nil && mode.maxSteps > 0 && mode.maxSteps < maxSteps {
+		maxSteps = mode.maxSteps
+	}
+
+	for step := 1; step <= maxSteps; step++ {
+		systemPrompt = a.resolveSystemPrompt(ctx, tapeName)
+
+		// Re-collect tools each step to include newly discovered tools
+		// Cache the tool list per tape for the duration of this step; invalidated on discovery.
+		tools = a.collectToolsWithDiscoveryCached(ctx, tapeName)
+		tools = filterExcludedTools(tools, mode)
+		tools = filterAllowedTools(tools, mode)
+
+		var tapeCtx *tape.TapeContext
+		if histAfter <= 0 {
+			if mode != nil && mode.tapeContextOverride != nil {
+				tapeCtx = mode.tapeContextOverride
+			} else {
+				tapeCtx = tape.NewLastAnchorContext()
+			}
+		}
+		opts := client.ChatOpts{
+			Prompt:              currentPrompt,
+			SystemPrompt:        systemPrompt,
+			Tools:               tools,
+			ToolContext:         toolCtx,
+			Tape:                tapeName,
+			Context:             tapeCtx,
+			HistoryAfterEntryID: histAfter,
+			MaxTokens:           a.completionMaxTokensForTape(tapeName),
+		}
+
+		// Get per-tape ChatClient
+		chatClient := a.getChatClient(tapeName)
+
+		// Pre-check: Estimate tokens before calling API to avoid wasting a call
+		// if context is likely to overflow. This is a best-effort optimization.
+		if histAfter <= 0 {
+			estimatedTokens := a.estimateContextTokens(tapeName, tapeCtx)
+			if estimatedTokens > 0 && a.shouldAutoHandoffByEstimate(tapeName, estimatedTokens) {
+				slog.Info("compact: preemptive trigger", "estimated_tokens", estimatedTokens)
+
+				if a.shouldCompactNow(tapeName, step) {
+					handoffName := fmt.Sprintf("auto:preemptive:%s", time.Now().UTC().Format("20060102-150405"))
+					if err := a.CompactTapeWithName(ctx, tapeName, handoffName); err != nil {
+						slog.Error("compact: preemptive compact failed; continuing anyway", "error", err)
+					} else {
+						slog.Info("compact: preemptive compact succeeded", "anchor", handoffName)
+						a.recordCompactStep(tapeName, step)
+
+						// Rebuild system prompt and continue with structured prompt
+						systemPrompt = a.resolveSystemPrompt(ctx, tapeName)
+						if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
+							slog.Warn("tape append failed", "tape", tapeName, "error", err)
+						}
+						if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{
+							"role":    "user",
+							"content": continueAfterCompactPrompt,
+						})); err != nil {
+							slog.Warn("tape append failed", "tape", tapeName, "error", err)
+						}
+						continue
+					}
+				} else {
+					slog.Debug("compact: preemptive skipped (too soon or compact failed)")
+				}
+			}
+		}
+
+		// Check BeforeToolCall hooks will be done inside executor
+		result, err := chatClient.RunTools(ctx, opts)
+		if err != nil {
+			// Auto-compact on context overflow: compact and replay last round
+			if !autoHandoffDone && isContextOverflowError(err) {
+				handled, handoffErr := a.handleContextOverflow(ctx, tapeName, step, currentPrompt)
+				if handoffErr != nil {
+					return nil, toolIterations, handoffErr
+				}
+				if handled {
+					autoHandoffDone = true
+					continue
+				}
+			}
+			kind := core.ErrUnknown
+			var re *core.RepublicError
+			if errors.As(err, &re) {
+				kind = re.Kind
+			}
+			return nil, toolIterations, core.NewError(kind, fmt.Sprintf("step %d failed", step), err)
+		}
+
+		// Capture token usage from the latest successful LLM call (best effort).
+		if result.Usage != nil {
+			if pt, ok := intFromUsageMap(result.Usage, "prompt_tokens"); ok {
+				lastPromptTokens = pt
+			}
+			if ct, ok := intFromUsageMap(result.Usage, "completion_tokens"); ok {
+				lastCompletionTokens = ct
+			}
+		}
+
+		switch result.Kind {
+		case "text":
+			assistantEntry := map[string]any{"role": "assistant", "content": result.Text}
+			if result.Reasoning != "" {
+				assistantEntry["reasoning"] = result.Reasoning
+			}
+			if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(assistantEntry)); err != nil {
+				slog.Warn("tape append failed", "tape", tapeName, "error", err)
+			}
+			if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "ok"})); err != nil {
+				slog.Warn("tape append failed", "tape", tapeName, "error", err)
+			}
+			return &Result{
+				Output:           result.Text,
+				Steps:            step,
+				PromptTokens:     lastPromptTokens,
+				CompletionTokens: lastCompletionTokens,
+			}, toolIterations, nil
+
+		case "tools":
+			// Tools were executed, build continuation messages
+			toolIterations++
+			if result.Text != "" && len(result.ToolCalls) == 0 {
+				return &Result{
+					Output:           result.Text,
+					Steps:            step,
+					PromptTokens:     lastPromptTokens,
+					CompletionTokens: lastCompletionTokens,
+				}, toolIterations, nil
+			}
+
+			// Build tool result messages for next round
+			var msgs []map[string]any
+
+			// Add assistant message with tool calls
+			if len(result.ToolCalls) > 0 {
+				tcMaps := make([]map[string]any, 0, len(result.ToolCalls))
+				for _, tc := range result.ToolCalls {
+					tcMaps = append(tcMaps, map[string]any{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      tc.Function.Name,
+							"arguments": tc.Function.Arguments,
+						},
+					})
+				}
+				assistantWithTools := map[string]any{
+					"role":       "assistant",
+					"content":    result.Text,
+					"tool_calls": tcMaps,
+				}
+				if result.Reasoning != "" {
+					assistantWithTools["reasoning"] = result.Reasoning
+				}
+				msgs = append(msgs, assistantWithTools)
+
+				// Add tool results
+				for i, tr := range result.ToolResults {
+					callID := ""
+					toolName := ""
+					toolArgs := ""
+					if i < len(result.ToolCalls) {
+						callID = result.ToolCalls[i].ID
+						toolName = result.ToolCalls[i].Function.Name
+						toolArgs = result.ToolCalls[i].Function.Arguments
+					}
+					// Some providers (e.g. minimax) enforce strict request input-length limits.
+					// Tool outputs can be huge (e.g. curl/exec output); truncate to keep the
+					// next request within provider bounds.
+					maxChars := a.toolResultMaxCharsForTape(tapeName)
+					content := truncateForProvider(fmt.Sprintf("%v", tr), maxChars)
+					msgs = append(msgs, map[string]any{
+						"role":         "tool",
+						"tool_call_id": callID,
+						"content":      content,
+					})
+
+					// Notify callback
+					a.onToolCallMu.RLock()
+					fn := a.config.OnToolCall
+					a.onToolCallMu.RUnlock()
+					if fn != nil {
+						fn(ToolCallEvent{
+							Name:      toolName,
+							Arguments: toolArgs,
+							Result:    content,
+						})
+					}
+				}
+			}
+
+			// Record to tape
+			a.tape.RecordChat(tape.RecordChatOpts{
+				Tape:        tapeName,
+				Messages:    msgs,
+				ToolCalls:   result.ToolCalls,
+				ToolResults: result.ToolResults,
+			})
+
+			// Check if all tool calls in this round were denied
+			allDenied := len(result.ToolResults) > 0
+			hasMeaningfulComment := false
+			for _, tr := range result.ToolResults {
+				if m, ok := tr.(map[string]any); ok {
+					if kind, _ := m["kind"].(string); kind == "denied" {
+						if msg, _ := m["message"].(string); msg != "" {
+							if strings.Contains(msg, "denied by user") && len(msg) > len("denied by user: ") {
+								hasMeaningfulComment = true
+							}
+						}
+						continue
+					}
+				}
+				allDenied = false
+				break
+			}
+			if allDenied {
+				if hasMeaningfulComment {
+					// User provided feedback; give model more chances to adjust
+					if consecutiveDenies >= 4 {
+						msg := "all tool calls denied by policy despite user feedback, stopping"
+						if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "denied"})); err != nil {
+							slog.Warn("tape append failed", "tape", tapeName, "error", err)
+						}
+						return &Result{
+							Output:           msg,
+							Steps:            step,
+							PromptTokens:     lastPromptTokens,
+							CompletionTokens: lastCompletionTokens,
+						}, toolIterations, nil
+					}
+					consecutiveDenies++
+				} else {
+					consecutiveDenies++
+					if consecutiveDenies >= 2 {
+						msg := "all tool calls denied by policy, stopping"
+						if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "denied"})); err != nil {
+							slog.Warn("tape append failed", "tape", tapeName, "error", err)
+						}
+						return &Result{
+							Output:           msg,
+							Steps:            step,
+							PromptTokens:     lastPromptTokens,
+							CompletionTokens: lastCompletionTokens,
+						}, toolIterations, nil
+					}
+				}
+			} else {
+				consecutiveDenies = 0
+			}
+
+			// Build continuation prompt based on any user comment from denials
+			var userComment string
+			for _, tr := range result.ToolResults {
+				if m, ok := tr.(map[string]any); ok {
+					if kind, _ := m["kind"].(string); kind == "denied" {
+						if msg, _ := m["message"].(string); msg != "" {
+							prefixes := []string{"denied by user: ", "denied by user (not selected): "}
+							for _, prefix := range prefixes {
+								if idx := strings.Index(msg, prefix); idx >= 0 {
+									if comment := strings.TrimSpace(msg[idx+len(prefix):]); comment != "" {
+										userComment = comment
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+				if userComment != "" {
+					break
+				}
+			}
+			if userComment != "" {
+				currentPrompt = fmt.Sprintf(
+					"The user denied your previous tool request with the following feedback: %q. "+
+						"You MUST adjust your strategy based on this feedback. Do not repeat the same request or use the same approach.",
+					userComment,
+				)
+			} else if hasShellFailure(result.ToolCalls, result.ToolResults) {
+				currentPrompt = "The previous shell command failed with a non-zero exit code. You MUST analyze the error output, identify what was wrong with your command, and fix it before proceeding. Do not assume the command succeeded."
+			} else {
+				currentPrompt = "Continue based on the tool results above."
+			}
+
+			// Proactive auto-handoff: check token usage after tool execution
+			if result.Usage != nil && a.shouldAutoHandoff(tapeName, result.Usage) {
+				pt, _ := intFromUsageMap(result.Usage, "prompt_tokens")
+				limit := a.handoffContextLimit(tapeName)
+				threshold := a.handoffThreshold(tapeName)
+
+				if !a.shouldCompactNow(tapeName, step) {
+					slog.Warn("compact: skipped (too soon after last compact)", "current_step", step)
+				} else {
+					slog.Info("compact: triggered", "prompt_tokens", pt, "limit", limit, "threshold", threshold, "effective_limit", int(float64(limit)*threshold))
+
+					handoffName := fmt.Sprintf("auto:token-threshold:%s", time.Now().UTC().Format("20060102-150405"))
+					if err := a.CompactTapeWithName(ctx, tapeName, handoffName); err != nil {
+						slog.Error("compact: failed; using anchor-only handoff", "error", err)
+						a.Handoff(tapeName, handoffName, map[string]any{
+							"reason":        "token_threshold",
+							"compact_error": err.Error(),
+						})
+					} else {
+						slog.Info("compact: succeeded", "anchor", handoffName)
+					}
+
+					a.recordCompactStep(tapeName, step)
+
+					currentPrompt = continueAfterCompactPrompt
+
+					systemPrompt = a.resolveSystemPrompt(ctx, tapeName)
+					if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
+						slog.Warn("tape append failed", "tape", tapeName, "error", err)
+					}
+					if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{
+						"role": "user", "content": currentPrompt,
+					})); err != nil {
+						slog.Warn("tape append failed", "tape", tapeName, "error", err)
+					}
+					continue
+				}
+			}
+
+		case "error":
+			if result.Error != nil {
+				return nil, toolIterations, core.NewError(result.Error.Kind, fmt.Sprintf("step %d: %s", step, result.Error.Message), nil)
+			}
+			return nil, toolIterations, core.NewError(core.ErrUnknown, fmt.Sprintf("step %d: unknown error", step), nil)
+
+		default:
+			return nil, toolIterations, core.NewError(core.ErrUnknown, fmt.Sprintf("step %d: unexpected result kind: %s", step, result.Kind), nil)
+		}
+	}
+
+	return nil, toolIterations, core.NewError(core.ErrUnknown, fmt.Sprintf("max steps reached (%d)", maxSteps), nil)
+}
