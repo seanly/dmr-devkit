@@ -105,10 +105,45 @@ AI_API_KEY=your-key AI_MODEL=gpt-4o-mini go run .
 | `DefaultInputModes` | No | Supported input modes |
 | `DefaultOutputModes` | No | Supported output modes |
 
+### Port Configuration
+
+The A2A server listen port should be configured under the `[a2a]` config block, not as a CLI flag or embedded in domain-specific stanzas.
+
+**Resolution order (first non-empty wins):**
+1. `PORT` environment variable
+2. `[a2a].port` (or `[[agents]].a2a.port` for multi-agent configs)
+3. Agent-specific default (e.g. `8081`, `8082`, `8083`, `8084`)
+
+**TOML example:**
+
+```toml
+[a2a]
+port = "8082"
+public_invoke_url = "http://acr-agent:8082/invoke"
+mount_path = "/invoke"
+bearer_token = "${A2A_BEARER_TOKEN}"
+```
+
+**Go wiring:**
+
+```go
+a2a := mergeA2A(spec.A2A, tomlCfg.A2A)
+port := dmrconfig.FirstNonEmpty(os.Getenv("PORT"), a2a.Port, "8082")
+
+addr := ":" + port
+log.Printf("A2A listening on %s", addr)
+log.Fatal(http.ListenAndServe(addr, handler))
+```
+
+> Do not add a `-port` CLI flag. Keep A2A settings centralized under `[a2a]` so that `public_invoke_url`, `mount_path`, `bearer_token`, and `port` are co-located.
+
+---
+
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
+| `PORT` | A2A server listen port (overrides config file) |
 | `A2A_PUBLIC_INVOKE_URL` | Public invoke URL. Required when behind NAT, load balancer, or TLS terminator |
 
 ---
@@ -212,6 +247,31 @@ if spec != nil && spec.A2A.BearerToken != "" {
 }
 ```
 
+### Important: mergeA2A must merge BearerToken
+
+When using multi-agent configs with a global `[a2a]` fallback, your `mergeA2A` helper **must** propagate `BearerToken` from the global config. Otherwise the token is silently dropped and authentication is disabled.
+
+```go
+func mergeA2A(agent, file A2A) A2A {
+    out := agent
+    if out.PublicInvokeURL == "" {
+        out.PublicInvokeURL = file.PublicInvokeURL
+    }
+    if out.MountPath == "" {
+        out.MountPath = file.MountPath
+    }
+    if out.BearerToken == "" {          // <-- REQUIRED
+        out.BearerToken = file.BearerToken
+    }
+    if out.Port == "" {
+        out.Port = file.Port
+    }
+    return out
+}
+```
+
+> **Bug pattern:** Forgetting to merge `BearerToken` causes the agent to start without auth, making all clients appear to "work" even when sending wrong/missing tokens. Only clients that correctly enforce `Bearer ` prefix (like other DMR agents) will see `401 Unauthorized`.
+
 ### Other Auth Patterns
 
 - **Reverse proxy / API gateway**: Terminate auth at the proxy (AWS ALB, nginx, Kong)
@@ -236,6 +296,7 @@ if spec != nil && spec.A2A.BearerToken != "" {
 | Client cannot invoke | Wrong `PublicInvokeURL` | Set `A2A_PUBLIC_INVOKE_URL` to the externally reachable URL |
 | Tape history lost on restart | Using in-memory store | Configure `TapeConfig` with SQLite/PostgreSQL |
 | Model not found errors | Env vars not set | Ensure `AI_MODEL` and `AI_API_KEY` are in the server environment |
+| `401 Unauthorized` from some agents only | `mergeA2A` missing `BearerToken` merge | Check `mergeA2A` propagates `BearerToken` from global `[a2a]` to per-agent `spec.A2A` |
 
 ---
 
