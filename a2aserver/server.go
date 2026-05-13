@@ -37,6 +37,12 @@ type Options struct {
 	TapeName           string   // fixed mode only: constant tape passed to Runner.Run (default "default").
 	DefaultInputModes  []string
 	DefaultOutputModes []string
+
+	// ChunkSize controls streaming artifact output. If > 0, the agent output is split
+	// into chunks of this size and delivered as a sequence of TaskArtifactUpdateEvent
+	// via SSE streaming. If 0 (default), the entire output is returned as a single
+	// Message (non-streaming behavior).
+	ChunkSize int
 }
 
 func (o *Options) applyDefaults() error {
@@ -123,8 +129,45 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			_ = yield(msg, nil)
 			return
 		}
-		msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(res.Output))
-		_ = yield(msg, nil)
+
+		output := res.Output
+		if e.opts.ChunkSize <= 0 || len(output) <= e.opts.ChunkSize {
+			// Non-streaming: single Message delivery.
+			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(output))
+			_ = yield(msg, nil)
+			return
+		}
+
+		// Streaming artifact mode: split large output into chunks.
+		if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, nil), nil) {
+			return
+		}
+
+		chunkSize := e.opts.ChunkSize
+		var artifactID a2a.ArtifactID
+		for i := 0; i < len(output); i += chunkSize {
+			end := i + chunkSize
+			if end > len(output) {
+				end = len(output)
+			}
+			chunk := output[i:end]
+
+			var event *a2a.TaskArtifactUpdateEvent
+			if artifactID == "" {
+				event = a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(chunk))
+				artifactID = event.Artifact.ID
+			} else {
+				event = a2a.NewArtifactUpdateEvent(execCtx, artifactID, a2a.NewTextPart(chunk))
+			}
+			if end >= len(output) {
+				event.LastChunk = true
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+
+		_ = yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, nil), nil)
 	}
 }
 
