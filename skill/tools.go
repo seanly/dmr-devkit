@@ -235,7 +235,11 @@ func (m *Manager) handleSkillList(_ *tool.ToolContext, _ map[string]any) (any, e
 		if skillIsCore(s) {
 			group = "core"
 		}
-		lines = append(lines, fmt.Sprintf("- %s [%s] %s", s.Name, group, s.Location))
+		skType := s.Type
+		if skType == "" {
+			skType = "prompt"
+		}
+		lines = append(lines, fmt.Sprintf("- %s [%s] (%s) %s", s.Name, group, skType, s.Location))
 	}
 	return strings.Join(lines, "\n"), nil
 }
@@ -324,72 +328,63 @@ func (m *Manager) handleSkillDelete(_ *tool.ToolContext, args map[string]any) (a
 	return map[string]any{"success": true, "deleted": dir}, nil
 }
 
-// --- skillWorkflow ---
+// --- skillDelegate ---
 
-func (m *Manager) skillWorkflowTool() *tool.Tool {
+func (m *Manager) skillDelegateTool() *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "skillWorkflow",
-			Description: "Execute a workflow skill by name. Runs the workflow's steps as subagents in dependency order.",
+			Name:        "skillDelegate",
+			Description: "Delegate a task to a specialist skill agent.",
 			Group:       m.toolGroup,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name": map[string]any{
+					"skill": map[string]any{
 						"type":        "string",
-						"description": "Workflow skill name",
+						"description": "Agent skill name to delegate to",
 					},
-					"vars": map[string]any{
-						"type":        "object",
-						"description": "Variables to inject into workflow step prompts (e.g. image, tag, env)",
+					"task": map[string]any{
+						"type":        "string",
+						"description": "Task description for the specialist",
 					},
 				},
-				"required": []string{"name"},
+				"required": []string{"skill", "task"},
 			},
 		},
-		Handler:     m.handleSkillWorkflow,
+		Handler:     m.handleSkillDelegate,
 		NeedContext: true,
 	}
 }
 
-func (m *Manager) handleSkillWorkflow(ctx *tool.ToolContext, args map[string]any) (any, error) {
-	name, _ := args["name"].(string)
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		return map[string]any{"success": false, "error": "name is required"}, nil
+func (m *Manager) handleSkillDelegate(ctx *tool.ToolContext, args map[string]any) (any, error) {
+	skillID := strings.ToLower(strings.TrimSpace(args["skill"].(string)))
+	task := strings.TrimSpace(args["task"].(string))
+
+	if skillID == "" {
+		return map[string]any{"success": false, "error": "skill is required"}, nil
+	}
+	if task == "" {
+		return map[string]any{"success": false, "error": "task is required"}, nil
 	}
 
+	return m.runSkillDelegation(ctx, skillID, task)
+}
+
+// runSkillDelegation is the shared implementation for skillDelegate and synthesized delegate_* tools.
+func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string) (any, error) {
 	m.ensureSkillsFresh()
-	var loc string
 	var sk *Skill
 	for _, s := range m.skills {
-		if strings.ToLower(s.Name) == name {
-			loc = s.Location
+		if strings.ToLower(s.Name) == skillID {
 			sk = s
 			break
 		}
 	}
-	if loc == "" {
-		return map[string]any{"success": false, "error": "workflow skill not found"}, nil
+	if sk == nil {
+		return map[string]any{"success": false, "error": "skill not found"}, nil
 	}
-
-	// Re-read from disk to get latest content and Type.
-	sk, err := parseSkillFile(loc)
-	if err != nil {
-		return map[string]any{"success": false, "error": err.Error()}, nil
-	}
-	if sk.Type != "workflow" {
-		return map[string]any{"success": false, "error": fmt.Sprintf("skill %q is not a workflow (type=%s)", name, sk.Type)}, nil
-	}
-
-	wf, err := ParseWorkflow(sk.Content)
-	if err != nil {
-		return map[string]any{"success": false, "error": fmt.Sprintf("failed to parse workflow: %v", err)}, nil
-	}
-
-	steps, err := wf.TopologicalOrder()
-	if err != nil {
-		return map[string]any{"success": false, "error": fmt.Sprintf("workflow error: %v", err)}, nil
+	if sk.Type != "agent" {
+		return map[string]any{"success": false, "error": fmt.Sprintf("skill %q is not an agent skill", skillID)}, nil
 	}
 
 	raw, ok := ctx.State[tool.StateKeyRuntimeAgent]
@@ -401,61 +396,89 @@ func (m *Manager) handleSkillWorkflow(ctx *tool.ToolContext, args map[string]any
 		return map[string]any{"success": false, "error": "invalid runtime agent"}, nil
 	}
 
-	vars := make(map[string]string)
-	if rawVars, ok := args["vars"].(map[string]any); ok {
-		for k, v := range rawVars {
-			vars[k] = fmt.Sprintf("%v", v)
+	// Build contextJSON: inject skill body as system prompt override
+	var contextJSON string
+	if strings.TrimSpace(sk.Content) != "" {
+		b, _ := json.Marshal(map[string]any{
+			"system_prompt_override": sk.Content,
+		})
+		contextJSON = string(b)
+	}
+
+	maxSteps := sk.MaxIterations
+	if maxSteps == 0 {
+		maxSteps = 8
+	}
+
+	subCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		subCtx = ctx.Ctx
+	}
+
+	modelName := sk.Model
+	if modelName == "inherit" {
+		modelName = ""
+	}
+
+	output, err := ag.RunSubagentWithTools(subCtx, ctx.Tape, task, modelName, "temp", contextJSON, maxSteps, sk.ToolAllowlist)
+
+	if sk.MaxResultChars > 0 {
+		runes := []rune(output)
+		if len(runes) > sk.MaxResultChars {
+			output = string(runes[:sk.MaxResultChars]) + "\n[...truncated]"
 		}
 	}
 
-	stepResults := make(map[string]string)
-	for _, step := range steps {
-		prompt, err := renderPrompt(step.Prompt, vars, stepResults)
-		if err != nil {
-			return map[string]any{
-				"success": false,
-				"error":   fmt.Sprintf("step %q render failed: %v", step.Name, err),
-				"results": stepResults,
-			}, nil
-		}
-
-		var contextJSON string
-		if len(stepResults) > 0 {
-			b, _ := json.Marshal(map[string]any{
-				"previous_steps": stepResults,
-			})
-			contextJSON = string(b)
-		}
-
-		subCtx := context.Background()
-		if ctx != nil && ctx.Ctx != nil {
-			subCtx = ctx.Ctx
-		}
-		output, err := ag.RunSubagent(subCtx, ctx.Tape, prompt, step.Model, "temp", contextJSON, 0)
-		if err != nil {
-			return map[string]any{
-				"success": false,
-				"error":   fmt.Sprintf("step %q failed: %v", step.Name, err),
-				"results": stepResults,
-			}, nil
-		}
-		stepResults[step.Name] = output
+	if err != nil {
+		return map[string]any{"success": false, "error": err.Error()}, nil
 	}
+	return map[string]any{"success": true, "output": output}, nil
+}
 
-	out := map[string]any{
-		"success": true,
-		"results": stepResults,
-	}
-	if len(sk.Secrets) > 0 {
-		secretsOut := make([]map[string]string, 0, len(sk.Secrets))
-		for _, sec := range sk.Secrets {
-			secretsOut = append(secretsOut, map[string]string{
-				"name":        sec.Name,
-				"description": sec.Description,
-				"where":       sec.Where,
-			})
+// synthesizeDelegationTools generates one delegate_{skill} tool per agent skill.
+// These are surfaced directly in the LLM's function-calling schema so the orchestrator
+// can route without explicitly calling skillDelegate.
+func (m *Manager) synthesizeDelegationTools() []*tool.Tool {
+	m.ensureSkillsFresh()
+	var out []*tool.Tool
+	for _, sk := range m.skills {
+		if sk.Type != "agent" {
+			continue
 		}
-		out["secrets"] = secretsOut
+		name := "delegate_" + sk.Name
+		desc := sk.WhenToUse
+		if desc == "" {
+			desc = sk.Description
+		}
+		// Tag the description so the orchestrator knows this is a delegation tool.
+		desc = "[delegate] " + desc
+
+		skillID := sk.Name // capture for closure
+		out = append(out, &tool.Tool{
+			Spec: tool.ToolSpec{
+				Name:        name,
+				Description: desc,
+				Group:       m.toolGroup,
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task": map[string]any{
+							"type":        "string",
+							"description": "Task description for the specialist",
+						},
+					},
+					"required": []string{"task"},
+				},
+			},
+			Handler: func(ctx *tool.ToolContext, args map[string]any) (any, error) {
+				task := strings.TrimSpace(args["task"].(string))
+				if task == "" {
+					return map[string]any{"success": false, "error": "task is required"}, nil
+				}
+				return m.runSkillDelegation(ctx, skillID, task)
+			},
+			NeedContext: true,
+		})
 	}
-	return out, nil
+	return out
 }

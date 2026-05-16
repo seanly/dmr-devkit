@@ -32,32 +32,12 @@ func TestValidateSkillContent_TooLarge(t *testing.T) {
 	assert.ErrorContains(t, validateSkillContent(content, 50), "exceeds max size")
 }
 
-func TestValidateSkillContent_WorkflowOK(t *testing.T) {
-	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: workflow\n---\n\n### build\nprompt: Build\n"
+func TestValidateSkillContent_AgentOK(t *testing.T) {
+	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: agent\n---\n\nYou are a deploy specialist."
 	assert.NoError(t, validateSkillContent(content, 1024))
 }
 
-func TestValidateSkillContent_WorkflowInvalid(t *testing.T) {
-	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: workflow\n---\nno step headings here"
-	assert.ErrorContains(t, validateSkillContent(content, 1024), "invalid workflow format")
-}
-
-func TestValidateSkillContent_WorkflowMissingPrompt(t *testing.T) {
-	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: workflow\n---\n\n### build\nmodel: gpt-4\n"
-	assert.ErrorContains(t, validateSkillContent(content, 1024), "missing prompt")
-}
-
-func TestValidateSkillContent_WorkflowCycle(t *testing.T) {
-	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: workflow\n---\n\n### a\nprompt: do a\ndepends_on: [b]\n\n### b\nprompt: do b\ndepends_on: [a]\n"
-	assert.ErrorContains(t, validateSkillContent(content, 1024), "cycle")
-}
-
-func TestValidateSkillContent_WorkflowDuplicateName(t *testing.T) {
-	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: workflow\n---\n\n### build\nprompt: first\n\n### build\nprompt: second\n"
-	assert.ErrorContains(t, validateSkillContent(content, 1024), "duplicated")
-}
-
-func TestValidateSkillContent_WorkflowBadYAML(t *testing.T) {
-	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: workflow\n---\n\n### build\nprompt: [unclosed\n"
-	assert.ErrorContains(t, validateSkillContent(content, 1024), "invalid YAML")
+func TestValidateSkillContent_InvalidType(t *testing.T) {
+	content := "---\nname: deploy\ndescription: Deploy pipeline\ntype: unknown\n---\nbody"
+	assert.ErrorContains(t, validateSkillContent(content, 1024), "'type' must be 'prompt' or 'agent'")
 }

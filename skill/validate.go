@@ -27,18 +27,8 @@ func validateSkillContent(content string, maxSize int) error {
 		return fmt.Errorf("frontmatter missing 'description'")
 	}
 	if typ := strings.TrimSpace(front.Type); typ != "" {
-		if typ != "prompt" && typ != "workflow" {
-			return fmt.Errorf("frontmatter 'type' must be 'prompt' or 'workflow'")
-		}
-		if typ == "workflow" {
-			_, body, _ := splitFrontmatter(content)
-			wf, err := ParseWorkflow(body)
-			if err != nil {
-				return fmt.Errorf("invalid workflow format: %w", err)
-			}
-			if err := wf.Validate(); err != nil {
-				return fmt.Errorf("invalid workflow: %w", err)
-			}
+		if typ != "prompt" && typ != "agent" {
+			return fmt.Errorf("frontmatter 'type' must be 'prompt' or 'agent'")
 		}
 	}
 	if err := validateSkillSecrets(front.Secrets); err != nil {

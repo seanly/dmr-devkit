@@ -28,6 +28,11 @@ const subagentMaxDepth = 3
 // contextJSON: optional JSON string injected as a system message on the child tape.
 // maxSteps: optional step cap (0 means fall back to subagentMaxSteps scaled by depth).
 func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (string, error) {
+	return a.RunSubagentWithTools(ctx, parentTape, prompt, modelName, session, contextJSON, maxSteps, nil)
+}
+
+// RunSubagentWithTools runs a sub-agent with an optional tool whitelist.
+func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string) (string, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return "", core.NewError(core.ErrInvalidInput, "subagent: empty prompt", nil)
 	}
@@ -102,6 +107,13 @@ func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, 
 	// Only ban recursive subagent when we've hit max depth.
 	if depth+1 >= subagentMaxDepth {
 		mode.excludeToolNames = map[string]struct{}{"subagent": {}}
+	}
+
+	if len(allowedTools) > 0 {
+		mode.allowedToolNames = make(map[string]struct{}, len(allowedTools))
+		for _, name := range allowedTools {
+			mode.allowedToolNames[name] = struct{}{}
+		}
 	}
 
 	res, _, err := a.run(ctx, childTape, prompt, 0, mode, "")

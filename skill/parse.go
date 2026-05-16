@@ -16,6 +16,14 @@ type skillFrontmatter struct {
 	Type        string        `yaml:"type"`
 	Group       string        `yaml:"group"`
 	Secrets     []SkillSecret `yaml:"secrets"`
+
+	// Agent skill fields
+	WhenToUse      string   `yaml:"when_to_use,omitempty"`
+	Model          string   `yaml:"model,omitempty"`
+	MaxIterations  int      `yaml:"max_iterations,omitempty"`
+	MaxResultChars int      `yaml:"max_result_chars,omitempty"`
+	ToolAllowlist  []string `yaml:"tool_allowlist,omitempty"`
+	Subagents      []string `yaml:"subagents,omitempty"`
 }
 
 // splitFrontmatter splits content into frontmatter YAML and body.
@@ -40,8 +48,8 @@ func splitFrontmatter(content string) (fm string, body string, hasFM bool) {
 	return fm, body, true
 }
 
-// parseSkillMarkdown parses a full SKILL.md: YAML frontmatter + body.
-func parseSkillMarkdown(data []byte, location string) (*Skill, error) {
+// ParseSkillMarkdown parses a full SKILL.md: YAML frontmatter + body.
+func ParseSkillMarkdown(data []byte, location string) (*Skill, error) {
 	fm, body, ok := splitFrontmatter(string(data))
 	if !ok {
 		return nil, fmt.Errorf("skill %s: missing YAML frontmatter", location)
@@ -52,12 +60,18 @@ func parseSkillMarkdown(data []byte, location string) (*Skill, error) {
 	}
 
 	sk := &Skill{
-		Location:    location,
-		Name:        strings.TrimSpace(front.Name),
-		Description: strings.TrimSpace(front.Description),
-		Type:        strings.TrimSpace(front.Type),
-		Group:       strings.TrimSpace(front.Group),
-		Content:     body,
+		Location:       location,
+		Name:           strings.TrimSpace(front.Name),
+		Description:    strings.TrimSpace(front.Description),
+		Type:           strings.TrimSpace(front.Type),
+		Group:          strings.TrimSpace(front.Group),
+		Content:        body,
+		WhenToUse:      strings.TrimSpace(front.WhenToUse),
+		Model:          strings.TrimSpace(front.Model),
+		MaxIterations:  front.MaxIterations,
+		MaxResultChars: front.MaxResultChars,
+		ToolAllowlist:  front.ToolAllowlist,
+		Subagents:      front.Subagents,
 	}
 	for _, sec := range front.Secrets {
 		envName := sec.EnvName()
@@ -70,6 +84,19 @@ func parseSkillMarkdown(data []byte, location string) (*Skill, error) {
 	if sk.Name == "" {
 		sk.Name = filepath.Base(filepath.Dir(location))
 	}
+	if sk.Type == "" {
+		sk.Type = "prompt"
+	}
+	// Normalize legacy "workflow" to "agent"
+	if sk.Type == "workflow" {
+		sk.Type = "agent"
+	}
+	if sk.Model == "" {
+		sk.Model = "inherit"
+	}
+	if sk.MaxIterations == 0 {
+		sk.MaxIterations = 8
+	}
 	return sk, nil
 }
 
@@ -78,7 +105,7 @@ func parseSkillFile(path string) (*Skill, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseSkillMarkdown(data, path)
+	return ParseSkillMarkdown(data, path)
 }
 
 // validateSkillSecrets checks optional secrets[] when present in validated content.

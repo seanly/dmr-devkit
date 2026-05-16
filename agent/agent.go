@@ -213,7 +213,17 @@ func (a *Agent) GetCurrentModel(tapeName string) *config.ModelConfig {
 }
 
 // SwitchModel switches the model for the given tape (in-memory only).
+// It also resolves skill model route hints via AgentConfig.SkillModels.
 func (a *Agent) SwitchModel(tapeName, modelName string) error {
+	if strings.TrimSpace(modelName) == "" {
+		return core.NewError(core.ErrInvalidInput, "model name is empty", nil)
+	}
+
+	// Resolve skill model route hints (e.g. "cheap" → "gpt-4o-mini").
+	if routed, ok := a.config.AgentPolicy.SkillModels[modelName]; ok {
+		modelName = routed
+	}
+
 	for i := range a.config.Models {
 		m := &a.config.Models[i]
 		if m.Name == modelName || m.Model == modelName {

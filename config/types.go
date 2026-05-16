@@ -249,6 +249,9 @@ type AgentConfig struct {
 	// TapeModels maps tape name glob patterns to model names for per-tape model selection.
 	// Example: "feishu_bot_ops:*" = "gpt-4o-mini"
 	TapeModels map[string]string `toml:"models,omitempty"`
+	// SkillModels maps skill model route hints to actual model names.
+	// Example: "cheap" = "gpt-4o-mini", "reasoning" = "o3-mini"
+	SkillModels map[string]string `toml:"skill_models,omitempty"`
 }
 
 // ResolveSystemPrompts resolves all file-based system prompts relative to baseDir.

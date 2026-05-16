@@ -66,6 +66,16 @@ func (m *Manager) Skills() []*Skill {
 	return append([]*Skill{}, m.skills...)
 }
 
+// RegisterBuiltin registers an in-code skill (e.g. from embed.FS).
+// Built-ins are prepended so they appear first and can be overridden by disk skills.
+func (m *Manager) RegisterBuiltin(sk *Skill) {
+	m.ensureSkillsMu.Lock()
+	defer m.ensureSkillsMu.Unlock()
+
+	// If a disk skill with the same name exists, the built-in is shadowed.
+	m.skills = append([]*Skill{sk}, m.skills...)
+}
+
 // --- agent.Hooks implementation ---
 
 var _ agent.Hooks = (*Manager)(nil)
@@ -118,7 +128,7 @@ func (m *Manager) BatchBeforeToolCall(context.Context, []tool.BatchCheckItem) ma
 // --- tools ---
 
 func (m *Manager) allTools() []*tool.Tool {
-	return []*tool.Tool{
+	tools := []*tool.Tool{
 		m.skillTool(),
 		m.skillCreateTool(),
 		m.skillPromoteTool(),
@@ -126,8 +136,10 @@ func (m *Manager) allTools() []*tool.Tool {
 		m.skillListTool(),
 		m.skillEditTool(),
 		m.skillDeleteTool(),
-		m.skillWorkflowTool(),
+		m.skillDelegateTool(),
 	}
+	tools = append(tools, m.synthesizeDelegationTools()...)
+	return tools
 }
 
 func (m *Manager) skillTool() *tool.Tool {
@@ -179,7 +191,7 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 const structuredReasoningPrompt = `
 ## Structured Reasoning Protocol
 
-When using a workflow skill or tackling a complex multi-step task, follow this protocol:
+When using a skill agent or tackling a complex multi-step task, follow this protocol:
 
 ### Phase 1: Plan
 Before taking any action, output your plan:
@@ -212,31 +224,56 @@ func (m *Manager) buildSystemPrompt() (string, error) {
 	if len(coreSkills) == 0 {
 		return "", nil
 	}
-	var lines []string
-	lines = append(lines, "<available_skills>")
-	for _, s := range coreSkills {
-		lines = append(lines, "  <skill>")
-		lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapeXML(s.Name)))
-		lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapeXML(s.Description)))
-		lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapeXML(s.Location)))
-		if len(s.Secrets) > 0 {
-			sum := secretsSummaryForPrompt(s.Secrets)
-			if sum != "" {
-				lines = append(lines, fmt.Sprintf(`    <secrets count="%d">%s</secrets>`, len(s.Secrets), escapeXML(sum)))
-			} else {
-				lines = append(lines, fmt.Sprintf(`    <secrets count="%d"></secrets>`, len(s.Secrets)))
-			}
-		}
-		lines = append(lines, "  </skill>")
-	}
-	lines = append(lines, "</available_skills>")
 
-	// Phase 1: inject structured reasoning prompt when workflow skills are active.
+	var promptSkills, agentSkills []*Skill
 	for _, s := range coreSkills {
-		if s.Type == "workflow" {
-			lines = append(lines, structuredReasoningPrompt)
-			break
+		if s.Type == "agent" {
+			agentSkills = append(agentSkills, s)
+		} else {
+			promptSkills = append(promptSkills, s)
 		}
+	}
+
+	var lines []string
+
+	if len(promptSkills) > 0 {
+		lines = append(lines, "<available_skills>")
+		for _, s := range promptSkills {
+			lines = append(lines, "  <skill>")
+			lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapeXML(s.Name)))
+			lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapeXML(s.Description)))
+			lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapeXML(s.Location)))
+			if len(s.Secrets) > 0 {
+				sum := secretsSummaryForPrompt(s.Secrets)
+				if sum != "" {
+					lines = append(lines, fmt.Sprintf(`    <secrets count="%d">%s</secrets>`, len(s.Secrets), escapeXML(sum)))
+				} else {
+					lines = append(lines, fmt.Sprintf(`    <secrets count="%d"></secrets>`, len(s.Secrets)))
+				}
+			}
+			lines = append(lines, "  </skill>")
+		}
+		lines = append(lines, "</available_skills>")
+	}
+
+	if len(agentSkills) > 0 {
+		lines = append(lines, "<available_specialists>")
+		for _, s := range agentSkills {
+			lines = append(lines, "  <specialist>")
+			lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapeXML(s.Name)))
+			lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapeXML(s.Description)))
+			if s.WhenToUse != "" {
+				lines = append(lines, fmt.Sprintf("    <when_to_use>%s</when_to_use>", escapeXML(s.WhenToUse)))
+			}
+			lines = append(lines, "  </specialist>")
+		}
+		lines = append(lines, "</available_specialists>")
+		lines = append(lines, "To delegate to a specialist, call skillDelegate(skill=<name>, task=<description>).")
+	}
+
+	// Inject structured reasoning prompt when agent skills are active.
+	if len(agentSkills) > 0 {
+		lines = append(lines, structuredReasoningPrompt)
 	}
 
 	return strings.Join(lines, "\n"), nil

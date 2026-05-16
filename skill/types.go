@@ -13,6 +13,14 @@ type Skill struct {
 	Secrets     []SkillSecret
 	Content     string
 	Location    string
+
+	// Agent skill fields
+	WhenToUse      string
+	Model          string
+	MaxIterations  int
+	MaxResultChars int
+	ToolAllowlist  []string
+	Subagents      []string
 }
 
 // SkillSecret is one declared secret/env need (documentation only).

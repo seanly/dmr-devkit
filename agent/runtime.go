@@ -45,6 +45,9 @@ type RuntimeAgent interface {
 
 	// Sub-agent execution (used by subagent plugin)
 	RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (string, error)
+
+	// Sub-agent execution with tool whitelist.
+	RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string) (string, error)
 }
 
 // InterceptInputArgs holds the typed arguments for the InterceptInput hook.
