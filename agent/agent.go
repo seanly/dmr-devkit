@@ -18,6 +18,7 @@ import (
 	"github.com/seanly/dmr-devkit/core"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
+	"github.com/seanly/dmr-devkit/tools/toolsearch"
 )
 
 const defaultToolResultMaxChars = 120000
@@ -93,6 +94,15 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 	}
 	a.precomputePromptBases()
 	a.precomputeTapeModels()
+
+	// Inject built-in toolSearch for deferred tool discovery.
+	// Copy config.Tools to avoid mutating the caller's slice.
+	builtinTools := []*tool.Tool{toolsearch.NewTool(a)}
+	if len(a.config.Tools) > 0 {
+		builtinTools = append(builtinTools, a.config.Tools...)
+	}
+	a.config.Tools = builtinTools
+
 	return a
 }
 
