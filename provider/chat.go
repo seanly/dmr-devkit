@@ -11,13 +11,33 @@ type ChatProvider interface {
 	ChatCompletionStream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
 }
 
+// ContentPart is a part of a multi-modal message content.
+type ContentPart interface {
+	isContentPart()
+}
+
+// TextPart is a text content part.
+type TextPart struct {
+	Text string `json:"text"`
+}
+
+// ImagePart is an image content part.
+// URL may be a data URI (data:image/xxx;base64,...) or an HTTP URL.
+type ImagePart struct {
+	URL string `json:"image_url"`
+}
+
+func (TextPart) isContentPart() {}
+func (ImagePart) isContentPart() {}
+
 // Message represents a chat message.
 type Message struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"` // prior assistant turn; required by e.g. DeepSeek thinking mode
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Role             string        `json:"role"`
+	Content          string        `json:"content"`
+	Parts            []ContentPart `json:"-"` // multi-modal parts; when non-empty, takes precedence over Content
+	ReasoningContent string        `json:"reasoning_content,omitempty"` // prior assistant turn; required by e.g. DeepSeek thinking mode
+	ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID       string        `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall represents a function call in a message.

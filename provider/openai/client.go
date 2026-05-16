@@ -408,8 +408,12 @@ func (c *Client) buildRequest(req ChatRequest) goopenai.ChatCompletionRequest {
 	for _, m := range req.Messages {
 		msg := goopenai.ChatCompletionMessage{
 			Role:             m.Role,
-			Content:          m.Content,
 			ReasoningContent: m.ReasoningContent,
+		}
+		if len(m.Parts) > 0 {
+			msg.MultiContent = convertContentParts(m.Parts)
+		} else {
+			msg.Content = m.Content
 		}
 		if m.ToolCallID != "" {
 			msg.ToolCallID = m.ToolCallID
@@ -453,6 +457,27 @@ func (c *Client) buildRequest(req ChatRequest) goopenai.ChatCompletionRequest {
 	}
 
 	return goReq
+}
+
+func convertContentParts(parts []provider.ContentPart) []goopenai.ChatMessagePart {
+	result := make([]goopenai.ChatMessagePart, 0, len(parts))
+	for _, p := range parts {
+		switch part := p.(type) {
+		case provider.TextPart:
+			result = append(result, goopenai.ChatMessagePart{
+				Type: goopenai.ChatMessagePartTypeText,
+				Text: part.Text,
+			})
+		case provider.ImagePart:
+			result = append(result, goopenai.ChatMessagePart{
+				Type: goopenai.ChatMessagePartTypeImageURL,
+				ImageURL: &goopenai.ChatMessageImageURL{
+					URL: part.URL,
+				},
+			})
+		}
+	}
+	return result
 }
 
 func convertTools(tools []map[string]any) []goopenai.Tool {
