@@ -14,7 +14,7 @@ func TestTool_GetGroup(t *testing.T) {
 		{"explicit core", ToolGroupCore, ToolGroupCore},
 		{"explicit extended", ToolGroupExtended, ToolGroupExtended},
 		{"explicit mcp", ToolGroupMCP, ToolGroupMCP},
-		{"empty defaults to core", "", ToolGroupCore},
+		{"empty defaults to extended", "", ToolGroupExtended},
 	}
 
 	for _, tt := range tests {
@@ -39,7 +39,7 @@ func TestTool_IsCore(t *testing.T) {
 		{"mcp group", ToolGroupMCP, false, false},
 		{"extended with alwaysLoad", ToolGroupExtended, true, true},
 		{"mcp with alwaysLoad", ToolGroupMCP, true, true},
-		{"empty group (core)", "", false, true},
+		{"empty group (extended)", "", false, false},
 	}
 
 	for _, tt := range tests {
@@ -63,7 +63,7 @@ func TestTool_IsDeferred(t *testing.T) {
 		{"extended group", ToolGroupExtended, false, true},
 		{"mcp group", ToolGroupMCP, false, true},
 		{"extended with alwaysLoad", ToolGroupExtended, true, false},
-		{"empty group (core)", "", false, false},
+		{"empty group (extended)", "", false, true},
 	}
 
 	for _, tt := range tests {
@@ -127,13 +127,13 @@ func TestFilterCoreTools(t *testing.T) {
 	tools := []*Tool{
 		{Spec: ToolSpec{Name: "core1", Group: ToolGroupCore}},
 		{Spec: ToolSpec{Name: "extended1", Group: ToolGroupExtended}},
-		{Spec: ToolSpec{Name: "core2", Group: ""}},                                      // defaults to core
+		{Spec: ToolSpec{Name: "core2", Group: ""}},                                      // defaults to extended
 		{Spec: ToolSpec{Name: "extended2", Group: ToolGroupExtended, AlwaysLoad: true}}, // forced core
 	}
 
 	core := FilterCoreTools(tools)
-	if len(core) != 3 {
-		t.Errorf("FilterCoreTools returned %d tools, want 3", len(core))
+	if len(core) != 2 {
+		t.Errorf("FilterCoreTools returned %d tools, want 2", len(core))
 	}
 
 	// Check that all returned tools are core

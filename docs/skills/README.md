@@ -31,6 +31,7 @@ Use `SKILLS_SRC=docs/skills` only if you keep skills elsewhere.
 | `dmr-devkit-orchestration` | Workflow orchestration: Sequential, Parallel, Graph, Loop, Interrupt |
 | `dmr-devkit-a2a` | Expose devkit agents as A2A JSON-RPC services |
 | `dmr-devkit-observability` | Observability: tape storage backends, event streams, tracing |
+| `dmr-devkit-code-review` | Code quality and security review for devkit development |
 
 ## How to Use
 

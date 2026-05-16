@@ -31,8 +31,8 @@ type ToolSpec struct {
 	// === Tool Group and Loading Control ===
 
 	// Group specifies the tool loading group.
-	// "core" - always loaded (default if empty for backward compatibility)
-	// "extended" - deferred, needs ToolSearch to discover
+	// "core" - always loaded on every turn
+	// "extended" - deferred, needs ToolSearch to discover (default if empty)
 	// "mcp" - MCP tools, default deferred
 	Group ToolGroup
 
@@ -58,10 +58,11 @@ type Tool struct {
 	DynamicDescription DynamicDescriptionFunc
 }
 
-// GetGroup returns the tool's group, defaulting to "core" for backward compatibility.
+// GetGroup returns the tool's group, defaulting to "extended" for deferred discovery.
+// Only tools explicitly marked as core are loaded on every turn; unmarked tools are deferred.
 func (t *Tool) GetGroup() ToolGroup {
 	if t.Spec.Group == "" {
-		return ToolGroupCore
+		return ToolGroupExtended
 	}
 	return t.Spec.Group
 }
