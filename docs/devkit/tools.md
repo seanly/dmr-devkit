@@ -204,3 +204,91 @@ return nil, fmt.Errorf("操作失败: %w", err)
 ```
 
 注意：过大的返回值会被自动截断（默认最大 120000 字符），可通过 `AgentPolicy.ToolResultMaxChars` 或 `ModelConfig.ToolResultMaxChars` 调整。
+
+## 接入 MCP 服务器
+
+devkit 内置 `mcp` 包，可直接将外部 MCP 服务器的工具桥接到 agent 中，无需依赖 dmr 的插件系统。
+
+### 基本用法
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/seanly/dmr-devkit/devkit"
+    "github.com/seanly/dmr-devkit/mcp"
+)
+
+func main() {
+    ctx := context.Background()
+
+    conn, err := mcp.Connect(ctx, mcp.ServerConfig{
+        Name:      "filesystem",
+        Command:   "npx",
+        Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
+        Transport: "stdio",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer conn.Close()
+
+    opts := devkit.EnvOptions()
+    opts.APIKey = "your-key"
+    opts.Model = "gpt-4o-mini"
+
+    // 将 MCP 工具桥接到 devkit
+    opts.Tools = mcp.BridgeTools("filesystem", conn)
+
+    kit, err := devkit.Build(ctx, opts)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer func() { _ = kit.Close(ctx) }()
+
+    res, err := kit.Agent.Run(ctx, devkit.DefaultTapeName, "列出 /tmp 下的文件", 0)
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Println(res.Output)
+}
+```
+
+### 连接远程 SSE 服务器
+
+```go
+conn, err := mcp.Connect(ctx, mcp.ServerConfig{
+    Name:      "remote",
+    URL:       "http://localhost:8080/sse",
+    Transport: "sse",
+})
+```
+
+### 传入环境变量
+
+```go
+conn, err := mcp.Connect(ctx, mcp.ServerConfig{
+    Name:      "github",
+    Command:   "mcp-server-github",
+    Transport: "stdio",
+    Env: map[string]string{
+        "GITHUB_TOKEN": "ghp_xxx",
+    },
+})
+```
+
+### ServerConfig 字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `Name` | string | 是 | 服务器名称（用于工具前缀和日志） |
+| `Command` | string | stdio 必填 | 启动服务器的命令 |
+| `Args` | []string | 否 | 命令参数 |
+| `URL` | string | sse 必填 | SSE 服务器地址 |
+| `Transport` | string | 否 | `"stdio"` 或 `"sse"`，省略时自动检测 |
+| `Env` | map[string]string | 否 | 传递给服务器进程的环境变量 |
+
+桥接后的工具名称格式为 `mcp_{server_name}_{tool_name}`，默认分组为 `mcp`（延迟加载）。

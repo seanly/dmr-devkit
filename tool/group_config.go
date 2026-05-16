@@ -2,7 +2,7 @@ package tool
 
 // ResolveToolGroup reads the optional "tool_group" key from plugin config
 // and returns the corresponding ToolGroup, falling back to defaultGroup.
-// Valid values: "core", "extended".
+// Valid values: "core", "extended", "mcp".
 func ResolveToolGroup(config map[string]any, defaultGroup ToolGroup) ToolGroup {
 	if config == nil {
 		return defaultGroup
@@ -16,6 +16,8 @@ func ResolveToolGroup(config map[string]any, defaultGroup ToolGroup) ToolGroup {
 		return ToolGroupCore
 	case "extended":
 		return ToolGroupExtended
+	case "mcp":
+		return ToolGroupMCP
 	default:
 		return defaultGroup
 	}
