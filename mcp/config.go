@@ -7,5 +7,6 @@ type ServerConfig struct {
 	Args      []string
 	Env       map[string]string
 	URL       string
-	Transport string // "stdio" or "sse"
+	Transport string            // "stdio" or "sse"
+	Headers   map[string]string // HTTP headers sent with every request (sse transport)
 }

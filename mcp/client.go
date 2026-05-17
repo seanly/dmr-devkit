@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	mcpproto "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -51,7 +52,11 @@ func Connect(ctx context.Context, sc ServerConfig) (*Conn, error) {
 		if sc.URL == "" {
 			return nil, fmt.Errorf("mcp server %q: url is required for sse transport", sc.Name)
 		}
-		cli, err = mcpclient.NewSSEMCPClient(sc.URL)
+		var sseOpts []mcptransport.ClientOption
+		if len(sc.Headers) > 0 {
+			sseOpts = append(sseOpts, mcptransport.WithHeaders(sc.Headers))
+		}
+		cli, err = mcpclient.NewSSEMCPClient(sc.URL, sseOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %q: connect sse: %w", sc.Name, err)
 		}
