@@ -192,7 +192,7 @@ func (e *ToolExecutor) executeSerial(
 		if e.Verbose >= 1 {
 			slog.Info("tool call ok", "tool", name, "result", toolResultLogString(out, resLimit))
 		}
-		result.ToolResults = append(result.ToolResults, out)
+		result.ToolResults = append(result.ToolResults, tagToolResult(name, out))
 	}
 }
 
@@ -320,7 +320,7 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 				if e.Verbose >= 1 {
 					slog.Info("tool call ok", "tool", name, "mode", "parallel", "result", toolResultLogString(r.out, resLimit))
 				}
-				result.ToolResults = append(result.ToolResults, r.out)
+				result.ToolResults = append(result.ToolResults, tagToolResult(name, r.out))
 			}
 			continue
 		}
@@ -348,7 +348,7 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 		if e.Verbose >= 1 {
 			slog.Info("tool call ok", "tool", name, "result", toolResultLogString(out, resLimit))
 		}
-		result.ToolResults = append(result.ToolResults, out)
+		result.ToolResults = append(result.ToolResults, tagToolResult(name, out))
 	}
 }
 
@@ -412,6 +412,21 @@ func truncateRunes(s string, maxRunes int) string {
 		return s
 	}
 	return string(r[:maxRunes]) + fmt.Sprintf(" …[truncated %d runes]", len(r)-maxRunes)
+}
+
+// tagToolResult adds a source marker to tool results so the model can distinguish
+// live data from cached or inferred data. Only string results are prefixed;
+// structured results are left as-is to preserve JSON parseability.
+func tagToolResult(name string, out any) any {
+	if out == nil {
+		return out
+	}
+	switch x := out.(type) {
+	case string:
+		return "[LIVE DATA from " + name + "]\n" + x
+	default:
+		return out
+	}
 }
 
 func toolResultLogString(out any, maxRunes int) string {
