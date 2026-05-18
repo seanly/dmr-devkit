@@ -155,6 +155,8 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			var event *a2a.TaskArtifactUpdateEvent
 			if artifactID == "" {
 				event = a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(chunk))
+				event.Artifact.Name = e.opts.AgentName + "-output"
+				event.Artifact.Description = fmt.Sprintf("Output from %s agent", e.opts.AgentName)
 				artifactID = event.Artifact.ID
 			} else {
 				event = a2a.NewArtifactUpdateEvent(execCtx, artifactID, a2a.NewTextPart(chunk))
