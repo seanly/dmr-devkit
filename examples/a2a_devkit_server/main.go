@@ -63,7 +63,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	if err := a2aserver.Mount(mux, mountOpts, kit.Agent); err != nil {
+	if err := a2aserver.Mount(mux, mountOpts, &a2aserver.AgentRunner{Agent: kit.Agent}); err != nil {
 		log.Fatal(err)
 	}
 

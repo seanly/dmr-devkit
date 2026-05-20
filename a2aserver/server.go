@@ -21,9 +21,9 @@ import (
 // WellKnownAgentCardPath is the standard path for the agent card (same as [a2asrv.WellKnownAgentCardPath]).
 const WellKnownAgentCardPath = a2asrv.WellKnownAgentCardPath
 
-// Runner runs one agent turn. [*agent.Agent] satisfies this interface.
+// Runner runs one agent turn. [*agent.Agent] satisfies this interface when wrapped by inbound adapters.
 type Runner interface {
-	Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32) (*agent.Result, error)
+	Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, contextJSON string) (*agent.Result, error)
 }
 
 // Options configures routes and the agent card. PublicInvokeURL must be the absolute URL clients use for JSON-RPC POST (same path as MountPath on your public host).
@@ -123,7 +123,8 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			_ = yield(nil, fmt.Errorf("a2aserver: empty user message"))
 			return
 		}
-		res, err := e.runner.Run(ctx, e.opts.resolveTape(execCtx), prompt, 0)
+		contextJSON := ContextJSONFromMessage(execCtx.Message)
+		res, err := e.runner.Run(ctx, e.opts.resolveTape(execCtx), prompt, 0, contextJSON)
 		if err != nil {
 			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("Error: "+err.Error()))
 			_ = yield(msg, nil)

@@ -21,12 +21,16 @@ type stubRunner struct {
 	err error
 }
 
-func (s *stubRunner) Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32) (*agent.Result, error) {
+func (s *stubRunner) Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, contextJSON string) (*agent.Result, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	_ = tapeName
-	return &agent.RunResult{Output: s.out + ":" + prompt}, nil
+	out := s.out + ":" + prompt
+	if contextJSON != "" {
+		out += ":ctx=" + contextJSON
+	}
+	return &agent.RunResult{Output: out}, nil
 }
 
 type recordingRunner struct {
@@ -35,7 +39,7 @@ type recordingRunner struct {
 	out   string
 }
 
-func (r *recordingRunner) Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32) (*agent.Result, error) {
+func (r *recordingRunner) Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, _ string) (*agent.Result, error) {
 	r.mu.Lock()
 	r.tapes = append(r.tapes, tapeName)
 	r.mu.Unlock()
