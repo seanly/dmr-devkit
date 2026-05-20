@@ -35,6 +35,7 @@ func Connect(ctx context.Context, sc ServerConfig) (*Conn, error) {
 		}
 	}
 
+	var c *mcpclient.Client
 	switch transport {
 	case "stdio":
 		if sc.Command == "" {
@@ -44,7 +45,7 @@ func Connect(ctx context.Context, sc ServerConfig) (*Conn, error) {
 			return nil, fmt.Errorf("mcp server %q: %w", sc.Name, err)
 		}
 		env := buildEnv(sc.Env)
-		cli, err = mcpclient.NewStdioMCPClient(sc.Command, env, sc.Args...)
+		c, err = mcpclient.NewStdioMCPClient(sc.Command, env, sc.Args...)
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %q: start stdio: %w", sc.Name, err)
 		}
@@ -56,13 +57,20 @@ func Connect(ctx context.Context, sc ServerConfig) (*Conn, error) {
 		if len(sc.Headers) > 0 {
 			sseOpts = append(sseOpts, mcptransport.WithHeaders(sc.Headers))
 		}
-		cli, err = mcpclient.NewSSEMCPClient(sc.URL, sseOpts...)
+		c, err = mcpclient.NewSSEMCPClient(sc.URL, sseOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %q: connect sse: %w", sc.Name, err)
 		}
 	default:
 		return nil, fmt.Errorf("mcp server %q: unsupported transport %q", sc.Name, transport)
 	}
+
+	// Transports must be started before Initialize (mcp-go requirement).
+	if err := c.Start(ctx); err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("mcp server %q: start transport: %w", sc.Name, err)
+	}
+	cli = c
 
 	// Initialize handshake
 	initReq := mcpproto.InitializeRequest{}
