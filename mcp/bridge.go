@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	mcpproto "github.com/mark3labs/mcp-go/mcp"
 	"github.com/seanly/dmr-devkit/tool"
@@ -49,12 +50,22 @@ func BridgeTool(serverName string, conn *Conn, mt mcpproto.Tool) *tool.Tool {
 	dmrName := fmt.Sprintf("mcp_%s_%s", serverName, mt.Name)
 	params := inputSchemaToMap(mt)
 
+	searchHint := strings.TrimSpace(mt.Description)
+	if serverName != "" {
+		if searchHint != "" {
+			searchHint = serverName + ", mcp, " + searchHint
+		} else {
+			searchHint = serverName + ", mcp, " + mt.Name
+		}
+	}
+
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
 			Name:        dmrName,
 			Description: mt.Description,
 			Parameters:  params,
 			Group:       tool.ToolGroupMCP,
+			SearchHint:  searchHint,
 		},
 		Handler: func(ctx *tool.ToolContext, args map[string]any) (any, error) {
 			mcpCtx := context.Background()
