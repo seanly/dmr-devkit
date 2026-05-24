@@ -41,6 +41,7 @@ type Config struct {
 	Verbose    int
 	Models     []config.ModelConfig
 	OnToolCall func(event ToolCallEvent) // optional callback for tool call display
+	OnUIWidget func(widget any)          // optional callback for A2UI widget payloads
 }
 
 // Agent orchestrates multi-turn LLM + tool execution.
@@ -111,6 +112,25 @@ func (a *Agent) SetOnToolCall(fn func(ToolCallEvent)) {
 	a.onToolCallMu.Lock()
 	a.config.OnToolCall = fn
 	a.onToolCallMu.Unlock()
+}
+
+// SetOnUIWidget sets the callback for UI widget payloads (e.g. A2UI).
+func (a *Agent) SetOnUIWidget(fn func(widget any)) {
+	a.onToolCallMu.Lock()
+	a.config.OnUIWidget = fn
+	a.onToolCallMu.Unlock()
+}
+
+// EmitUIWidget invokes the configured OnUIWidget callback synchronously (if set).
+// Policy hooks may use this inside BeforeToolCall to push confirmation UI before the runner
+// unblocks — for example, workflow.AgentNode.RunEvents attaches OnUIWidget to stream A2UI to SSE clients.
+func (a *Agent) EmitUIWidget(widget any) {
+	a.onToolCallMu.RLock()
+	fn := a.config.OnUIWidget
+	a.onToolCallMu.RUnlock()
+	if fn != nil {
+		fn(widget)
+	}
 }
 
 // SetExecutor stores the tool executor reference for rebuilding chat clients.

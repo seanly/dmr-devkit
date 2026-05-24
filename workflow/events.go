@@ -18,20 +18,31 @@ const (
 	EventTypeNodeSkip      EventType = "node_skip" // resumed step, skipped
 	EventTypeStateDelta    EventType = "state_delta"
 	EventTypeInterrupt     EventType = "interrupt"
+	EventTypeUIWidget      EventType = "ui_widget" // A2UI payload emitted by agent
+	EventTypeToolCall      EventType = "tool_call" // Agent tool finished (for UI traces / SSE clients)
 )
+
+// ToolCallPayload is attached to EventTypeToolCall for streaming tool traces to browsers.
+type ToolCallPayload struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
+	Result    string `json:"result,omitempty"`
+}
 
 // Event is an atomic occurrence during workflow execution.
 type Event struct {
-	Type       EventType      `json:"type"`
-	Workflow   string         `json:"workflow"`
-	Node       string         `json:"node,omitempty"`
-	Step       int            `json:"step"`
-	Input      any            `json:"input,omitempty"`
-	Output     any            `json:"output,omitempty"`
-	Error      string         `json:"error,omitempty"`
-	StateDelta map[string]any `json:"state_delta,omitempty"`
-	Result     *Result        `json:"-"` // set on WorkflowEnd
-	Timestamp  time.Time      `json:"timestamp"`
+	Type       EventType        `json:"type"`
+	Workflow   string           `json:"workflow"`
+	Node       string           `json:"node,omitempty"`
+	Step       int              `json:"step"`
+	Input      any              `json:"input,omitempty"`
+	Output     any              `json:"output,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	StateDelta map[string]any   `json:"state_delta,omitempty"`
+	Result     *Result          `json:"-"`                   // set on WorkflowEnd
+	UIWidget   any              `json:"ui_widget,omitempty"` // A2UI payload (set on EventTypeUIWidget)
+	ToolCall   *ToolCallPayload `json:"tool_call,omitempty"` // set on EventTypeToolCall
+	Timestamp  time.Time        `json:"timestamp"`
 }
 
 // EventStream is a Runner that can emit execution events.

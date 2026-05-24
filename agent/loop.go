@@ -348,6 +348,18 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 							Result:    content,
 						})
 					}
+
+					// Notify UI widget callback: any tool may embed validated A2UI (LLM sends it via send_a2ui_json_to_client; demos may ship fixed shells from custom tools too).
+					if m, ok := tr.(map[string]any); ok {
+						if widget, has := m["validated_a2ui_json"]; has {
+							a.onToolCallMu.RLock()
+							wf := a.config.OnUIWidget
+							a.onToolCallMu.RUnlock()
+							if wf != nil {
+								wf(widget)
+							}
+						}
+					}
 				}
 			}
 

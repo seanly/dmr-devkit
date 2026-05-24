@@ -4,10 +4,24 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/seanly/dmr-devkit/agent"
 	"github.com/seanly/dmr-devkit/workflow"
 )
+
+const toolTraceMaxRunes = 12000
+
+func truncateDisplayRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 || s == "" {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "\n… [truncated]"
+}
 
 // AgentNode wraps a devkit [*Kit].Agent into a [workflow.Node] so it can be
 // orchestrated by Sequential, Parallel, Graph, or custom workflows.
@@ -24,6 +38,101 @@ func (a *AgentNode) Name() string {
 		return a.AgentName
 	}
 	return a.TapeName
+}
+
+// RunEvents executes the agent and emits workflow events including UI widget events.
+// It satisfies [workflow.EventStream] so the node can be used with streaming runners.
+func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input any) iter.Seq2[*workflow.Event, error] {
+	return func(yield func(*workflow.Event, error) bool) {
+		name := a.Name()
+
+		if !yield(&workflow.Event{Type: workflow.EventTypeWorkflowStart, Workflow: name, Step: wctx.Step, Timestamp: time.Now()}, nil) {
+			return
+		}
+		if !yield(&workflow.Event{Type: workflow.EventTypeNodeStart, Workflow: name, Node: name, Step: wctx.Step, Timestamp: time.Now()}, nil) {
+			return
+		}
+
+		prompt := ""
+		switch v := input.(type) {
+		case string:
+			prompt = v
+		case map[string]any:
+			if p, ok := v["prompt"].(string); ok {
+				prompt = p
+			} else {
+				prompt = fmt.Sprintf("%v", v)
+			}
+		default:
+			prompt = fmt.Sprintf("%v", input)
+		}
+
+		if a.SystemPrompt != "" && wctx != nil {
+			wctx.SetState(a.Name()+".system_prompt", a.SystemPrompt)
+		}
+
+		a.Kit.Agent.SetOnToolCall(func(ev agent.ToolCallEvent) {
+			payload := &workflow.ToolCallPayload{
+				Name:      ev.Name,
+				Arguments: truncateDisplayRunes(ev.Arguments, toolTraceMaxRunes),
+				Result:    truncateDisplayRunes(ev.Result, toolTraceMaxRunes),
+			}
+			_ = yield(&workflow.Event{
+				Type:      workflow.EventTypeToolCall,
+				Workflow:  name,
+				Node:      name,
+				Step:      wctx.Step,
+				ToolCall:  payload,
+				Timestamp: time.Now(),
+			}, nil)
+		})
+
+		// Capture UI widgets emitted during agent run.
+		a.Kit.Agent.SetOnUIWidget(func(widget any) {
+			_ = yield(&workflow.Event{
+				Type:      workflow.EventTypeUIWidget,
+				Workflow:  name,
+				Node:      name,
+				Step:      wctx.Step,
+				UIWidget:  widget,
+				Timestamp: time.Now(),
+			}, nil)
+		})
+
+		res, err := a.Kit.Agent.Run(ctx, a.TapeName, prompt, 0)
+
+		// Restore previous callbacks.
+		a.Kit.Agent.SetOnToolCall(nil)
+		a.Kit.Agent.SetOnUIWidget(nil)
+
+		endEv := &workflow.Event{
+			Type:      workflow.EventTypeNodeEnd,
+			Workflow:  name,
+			Node:      name,
+			Step:      wctx.Step,
+			Timestamp: time.Now(),
+		}
+		var output any
+		if res != nil {
+			output = res.Output
+			endEv.Output = res.Output
+		}
+		if err != nil {
+			endEv.Error = err.Error()
+		}
+		if !yield(endEv, nil) {
+			return
+		}
+
+		final := &workflow.Result{Output: output, Error: err, Steps: wctx.Step}
+		_ = yield(&workflow.Event{
+			Type:      workflow.EventTypeWorkflowEnd,
+			Workflow:  name,
+			Step:      wctx.Step,
+			Result:    final,
+			Timestamp: time.Now(),
+		}, nil)
+	}
 }
 
 // Run executes the agent with the given input (expected string prompt).

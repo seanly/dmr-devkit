@@ -26,6 +26,12 @@ type Runner interface {
 	Run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, contextJSON string) (*agent.Result, error)
 }
 
+// UIWidgetRunner is a Runner that can receive UI widget callbacks during execution.
+type UIWidgetRunner interface {
+	Runner
+	SetOnUIWidget(fn func(widget any))
+}
+
 // Options configures routes and the agent card. PublicInvokeURL must be the absolute URL clients use for JSON-RPC POST (same path as MountPath on your public host).
 type Options struct {
 	AgentName          string
@@ -123,10 +129,32 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			_ = yield(nil, fmt.Errorf("a2aserver: empty user message"))
 			return
 		}
+
+		// Collect UI widgets (e.g. A2UI payloads) emitted during agent execution.
+		var uiWidgets []any
+		if uwr, ok := e.runner.(UIWidgetRunner); ok {
+			uwr.SetOnUIWidget(func(widget any) {
+				uiWidgets = append(uiWidgets, widget)
+				// Stream widget immediately as a data part message.
+				part := a2a.NewDataPart(widget)
+				part.MediaType = "application/vnd.a2ui+json"
+				msg := a2a.NewMessage(a2a.MessageRoleAgent, part)
+				_ = yield(msg, nil)
+			})
+		}
+
 		contextJSON := ContextJSONFromMessage(execCtx.Message)
 		res, err := e.runner.Run(ctx, e.opts.resolveTape(execCtx), prompt, 0, contextJSON)
+
+		// Clear callback to avoid dangling references.
+		if uwr, ok := e.runner.(UIWidgetRunner); ok {
+			uwr.SetOnUIWidget(nil)
+		}
+
 		if err != nil {
-			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("Error: "+err.Error()))
+			parts := []*a2a.Part{a2a.NewTextPart("Error: " + err.Error())}
+			parts = appendUIWidgetParts(parts, uiWidgets)
+			msg := a2a.NewMessage(a2a.MessageRoleAgent, parts...)
 			_ = yield(msg, nil)
 			return
 		}
@@ -134,7 +162,9 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 		output := res.Output
 		if e.opts.ChunkSize <= 0 || len(output) <= e.opts.ChunkSize {
 			// Non-streaming: single Message delivery.
-			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(output))
+			parts := []*a2a.Part{a2a.NewTextPart(output)}
+			parts = appendUIWidgetParts(parts, uiWidgets)
+			msg := a2a.NewMessage(a2a.MessageRoleAgent, parts...)
 			_ = yield(msg, nil)
 			return
 		}
@@ -172,6 +202,15 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 
 		_ = yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, nil), nil)
 	}
+}
+
+func appendUIWidgetParts(parts []*a2a.Part, widgets []any) []*a2a.Part {
+	for _, widget := range widgets {
+		part := a2a.NewDataPart(widget)
+		part.MediaType = "application/vnd.a2ui+json"
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 func (e *executor) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
