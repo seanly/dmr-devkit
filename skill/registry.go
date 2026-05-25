@@ -39,9 +39,52 @@ func maxFileMtimeUnderRoots(roots []string) time.Time {
 	return max
 }
 
+func dedupeRoots(roots []string) []string {
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		key := root
+		if abs, err := filepath.Abs(root); err == nil {
+			key = abs
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, root)
+	}
+	return out
+}
+
+// dedupeSkillsByName keeps the first skill for each name. Roots are scanned in order,
+// so earlier paths shadow later duplicates (same semantics as RegisterBuiltin).
+func dedupeSkillsByName(skills []*Skill) []*Skill {
+	seen := make(map[string]struct{}, len(skills))
+	out := make([]*Skill, 0, len(skills))
+	for _, s := range skills {
+		if s == nil {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(s.Name))
+		if key == "" {
+			out = append(out, s)
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 func discoverSkillsFromRoots(paths []string) []*Skill {
 	var skills []*Skill
-	for _, dir := range paths {
+	for _, dir := range dedupeRoots(paths) {
 		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
@@ -60,7 +103,7 @@ func discoverSkillsFromRoots(paths []string) []*Skill {
 			return nil
 		})
 	}
-	return skills
+	return dedupeSkillsByName(skills)
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -108,10 +151,7 @@ func (m *Manager) ensureSkillsFresh() {
 	m.ensureSkillsMu.Lock()
 	defer m.ensureSkillsMu.Unlock()
 
-	allRoots := append([]string{}, m.resolvedRoots...)
-	if m.config.AutoCreatePath != "" {
-		allRoots = append(allRoots, m.config.AutoCreatePath)
-	}
+	allRoots := dedupeRoots(m.resolvedRoots)
 	cur := maxFileMtimeUnderRoots(allRoots)
 	if !cur.Equal(m.lastScanMtime) {
 		m.skills = discoverSkillsFromRoots(allRoots)
@@ -122,10 +162,7 @@ func (m *Manager) ensureSkillsFresh() {
 func (m *Manager) refreshSkills() {
 	m.ensureSkillsMu.Lock()
 	defer m.ensureSkillsMu.Unlock()
-	allRoots := append([]string{}, m.resolvedRoots...)
-	if m.config.AutoCreatePath != "" {
-		allRoots = append(allRoots, m.config.AutoCreatePath)
-	}
+	allRoots := dedupeRoots(m.resolvedRoots)
 	m.skills = discoverSkillsFromRoots(allRoots)
 	m.lastScanMtime = maxFileMtimeUnderRoots(allRoots)
 }

@@ -36,9 +36,9 @@ func NewManager(cfg Config) *Manager {
 
 	return &Manager{
 		config:        cfg,
-		resolvedRoots: roots,
-		skills:        discoverSkillsFromRoots(roots),
-		lastScanMtime: maxFileMtimeUnderRoots(roots),
+		resolvedRoots: dedupeRoots(roots),
+		skills:        discoverSkillsFromRoots(dedupeRoots(roots)),
+		lastScanMtime: maxFileMtimeUnderRoots(dedupeRoots(roots)),
 		toolGroup:     tool.ToolGroupCore,
 	}
 }
