@@ -21,7 +21,7 @@ func TestFilterAllowedTools(t *testing.T) {
 	}
 
 	// Allowed list with specific tools
-	out = filterAllowedTools(tools, &runMode{allowedToolNames: map[string]struct{}{"memoryRead": {}, "shell": {}}})
+	out = filterAllowedTools(tools, &runMode{toolWhitelist: true, allowedToolNames: map[string]struct{}{"memoryRead": {}, "shell": {}}})
 	if len(out) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(out))
 	}
@@ -32,9 +32,21 @@ func TestFilterAllowedTools(t *testing.T) {
 	}
 
 	// Allowed list with no matches
-	out = filterAllowedTools(tools, &runMode{allowedToolNames: map[string]struct{}{"unknown": {}}})
+	out = filterAllowedTools(tools, &runMode{toolWhitelist: true, allowedToolNames: map[string]struct{}{"unknown": {}}})
 	if len(out) != 0 {
 		t.Fatalf("expected 0 tools, got %d", len(out))
+	}
+
+	// Explicit empty whitelist removes all tools
+	out = filterAllowedTools(tools, &runMode{toolWhitelist: true, allowedToolNames: map[string]struct{}{}})
+	if len(out) != 0 {
+		t.Fatalf("expected 0 tools for empty whitelist, got %d", len(out))
+	}
+
+	// allowedToolNames populated but whitelist off behaves like unrestricted (historical callers)
+	out = filterAllowedTools(tools, &runMode{allowedToolNames: map[string]struct{}{"unknown": {}}})
+	if len(out) != 3 {
+		t.Fatalf("expected 3 tools when toolWhitelist unset, got %d", len(out))
 	}
 }
 

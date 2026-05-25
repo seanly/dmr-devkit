@@ -9,6 +9,39 @@ import (
 	"github.com/seanly/dmr-devkit/tape"
 )
 
+// ContextKeySystemPromptOverride is parsed from RunWithOpts/contextJSON ([tool.ToolContext.Context])
+// and appended to the composed base system prompt for each LLM step of that run.
+const ContextKeySystemPromptOverride = "system_prompt_override"
+
+// systemPromptOverrideFromPluginContext returns the trimmed workflow / plugin step override.
+func systemPromptOverrideFromPluginContext(pluginContext map[string]any) string {
+	if pluginContext == nil {
+		return ""
+	}
+	raw, ok := pluginContext[ContextKeySystemPromptOverride]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+// mergeWorkflowStepSystemPrompt appends optional per-step instructions after the composed base prompt.
+func mergeWorkflowStepSystemPrompt(base, stepOverride string) string {
+	stepOverride = strings.TrimSpace(stepOverride)
+	if stepOverride == "" {
+		return base
+	}
+	if strings.TrimSpace(base) == "" {
+		return stepOverride
+	}
+	return base + "\n\n--- Workflow step ---\n\n" + stepOverride
+}
+
 // countUserTurns counts the number of user messages on the tape.
 func (a *Agent) countUserTurns(tapeName string) int {
 	// Limit to recent messages to avoid reading huge tapes; 1000 is enough for turn counting.

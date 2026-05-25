@@ -136,10 +136,10 @@ func (a *Agent) RunWithOpts(ctx context.Context, tapeName, prompt string, histor
 ### `Agent.RunWithOptsAndTools`
 
 ```go
-func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools []string, contextJSON string) (*Result, error)
+func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools *[]string, contextJSON string) (*Result, error)
 ```
 
-支持白名单限制可用工具。
+`allowedTools == nil` 表示不按名称限制工具可见性（仍受插件发现、策略等约束）。若传入非空指针，仅允许 `*allowedTools` 中列出的工具名；指针指向的空切片等价于不向模型暴露任何工具。
 
 ## 结果结构
 

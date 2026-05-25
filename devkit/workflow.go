@@ -2,8 +2,10 @@ package devkit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
+	"strings"
 	"time"
 
 	"github.com/seanly/dmr-devkit/agent"
@@ -30,6 +32,11 @@ type AgentNode struct {
 	AgentName    string
 	TapeName     string
 	SystemPrompt string
+	// AllowedTools restricts tool visibility when non-nil: *slice may be empty to expose no tools.
+	// When nil (YAML omit), eligible tools remain unrestricted after discovery.
+	AllowedTools *[]string
+	// Model, when non-empty, selects the ChatClient for TapeName via [agent.Agent.SwitchModel].
+	Model string
 }
 
 // Name returns the node name; satisfies [workflow.Node].
@@ -99,7 +106,7 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 			}, nil)
 		})
 
-		res, err := a.Kit.Agent.Run(ctx, a.TapeName, prompt, 0)
+		res, err := a.runInvocation(ctx, prompt)
 
 		// Restore previous callbacks.
 		a.Kit.Agent.SetOnToolCall(nil)
@@ -152,18 +159,31 @@ func (a *AgentNode) Run(ctx context.Context, wctx *workflow.Context, input any) 
 		prompt = fmt.Sprintf("%v", input)
 	}
 
-	// Append optional system prompt override via state injection.
-	if a.SystemPrompt != "" {
-		if wctx != nil {
-			wctx.SetState(a.Name()+".system_prompt", a.SystemPrompt)
-		}
-	}
-
-	res, err := a.Kit.Agent.Run(ctx, a.TapeName, prompt, 0)
+	res, err := a.runInvocation(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}
 	return res.Output, nil
+}
+
+// runInvocation executes one agent turn with optional tool restriction, optional
+// per-step system prompt (via RunWithOpts/contextJSON), and optional model routing.
+func (a *AgentNode) runInvocation(ctx context.Context, prompt string) (*agent.Result, error) {
+	var ctxJSON string
+	if s := strings.TrimSpace(a.SystemPrompt); s != "" {
+		payload := map[string]any{agent.ContextKeySystemPromptOverride: s}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("devkit workflow node: marshal context: %w", err)
+		}
+		ctxJSON = string(b)
+	}
+	if m := strings.TrimSpace(a.Model); m != "" {
+		if err := a.Kit.Agent.SwitchModel(a.TapeName, m); err != nil {
+			return nil, fmt.Errorf("devkit workflow node: SwitchModel(%q): %w", m, err)
+		}
+	}
+	return a.Kit.Agent.RunWithOptsAndTools(ctx, a.TapeName, prompt, 0, 0, a.AllowedTools, ctxJSON)
 }
 
 // RunWorkflow executes a [workflow.Runner] (Sequential, Parallel, Graph, etc.)

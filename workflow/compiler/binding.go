@@ -14,9 +14,14 @@ import (
 // BindAgents replaces all placeholder nodes in the compiled graph with real
 // AgentNodes backed by the given devkit Kit.
 func (cw *CompiledWorkflow) BindAgents(kit *devkit.Kit) error {
-	factory := func(name, tapeName, systemPrompt string) workflow.Node {
-		node := kit.AsAgentNodeWithTape(name, tapeName)
-		node.SystemPrompt = systemPrompt
+	factory := func(nodeID, tapeName string, def dsl.AgentDef) workflow.Node {
+		node := kit.AsAgentNodeWithTape(nodeID, tapeName)
+		node.SystemPrompt = def.SystemPrompt
+		if def.Tools != nil {
+			s := append([]string(nil), (*def.Tools)...)
+			node.AllowedTools = &s
+		}
+		node.Model = def.Model
 		return node
 	}
 	return cw.BindWithFactory(factory)
@@ -25,7 +30,7 @@ func (cw *CompiledWorkflow) BindAgents(kit *devkit.Kit) error {
 // BindWithFactory replaces placeholder nodes using a caller-provided factory.
 // This allows the dmr plugin (which does not have a devkit.Kit) to supply its
 // own agent node implementation.
-func (cw *CompiledWorkflow) BindWithFactory(factory func(name, tapeName, systemPrompt string) workflow.Node) error {
+func (cw *CompiledWorkflow) BindWithFactory(factory func(nodeID, tapeName string, def dsl.AgentDef) workflow.Node) error {
 	for _, s := range cw.Def.Stages {
 		for _, a := range s.Agents {
 			nodeID := fmt.Sprintf("%s:%s", s.ID, a.ID)
@@ -35,7 +40,7 @@ func (cw *CompiledWorkflow) BindWithFactory(factory func(name, tapeName, systemP
 			}
 
 			tapeName := fmt.Sprintf("workflow/%s/%s", cw.Def.Name, nodeID)
-			baseNode := factory(nodeID, tapeName, a.SystemPrompt)
+			baseNode := factory(nodeID, tapeName, a)
 
 			// Wrap with prompt template rendering.
 			promptT := cw.Prompts[promptKey(s.ID, a.ID)]

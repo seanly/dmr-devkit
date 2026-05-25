@@ -78,7 +78,7 @@ func filterExcludedTools(tools []*tool.Tool, mode *runMode) []*tool.Tool {
 }
 
 func filterAllowedTools(tools []*tool.Tool, mode *runMode) []*tool.Tool {
-	if mode == nil || len(mode.allowedToolNames) == 0 {
+	if mode == nil || !mode.toolWhitelist {
 		return tools
 	}
 	out := make([]*tool.Tool, 0, len(tools))

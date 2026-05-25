@@ -32,6 +32,8 @@ func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, 
 }
 
 // RunSubagentWithTools runs a sub-agent with an optional tool whitelist.
+// allowedTools: nil means do not whitelist (usual tool discovery applies). Non-nil restricts to the
+// given names—an empty non-nil slice (e.g. from YAML []) removes all tools.
 func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string) (string, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return "", core.NewError(core.ErrInvalidInput, "subagent: empty prompt", nil)
@@ -109,7 +111,8 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 		mode.excludeToolNames = map[string]struct{}{"subagent": {}}
 	}
 
-	if len(allowedTools) > 0 {
+	if allowedTools != nil {
+		mode.toolWhitelist = true
 		mode.allowedToolNames = make(map[string]struct{}, len(allowedTools))
 		for _, name := range allowedTools {
 			mode.allowedToolNames[name] = struct{}{}

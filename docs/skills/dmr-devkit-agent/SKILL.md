@@ -215,8 +215,10 @@ res, err := kit.Agent.RunWithOpts(ctx, tapeName, prompt, historyAfterEntryID, ma
 ### Advanced: RunWithOptsAndTools
 
 ```go
-// Run with a whitelist of allowed tools
-res, err := kit.Agent.RunWithOptsAndTools(ctx, tapeName, prompt, historyAfterEntryID, maxSteps, allowedTools, contextJSON)
+// allowedTools == nil: no name-based whitelist.
+// Pointer to slice: whitelist (empty slice = expose zero tools).
+allowed := []string{"memoryRead"}
+res, err := kit.Agent.RunWithOptsAndTools(ctx, tapeName, prompt, historyAfterEntryID, maxSteps, &allowed, contextJSON)
 ```
 
 ---

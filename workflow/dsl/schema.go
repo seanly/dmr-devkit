@@ -37,7 +37,10 @@ type AgentDef struct {
 	Model        string            `yaml:"model,omitempty" json:"model,omitempty"`
 	MaxTokens    int               `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
 	Temperature  float64           `yaml:"temperature,omitempty" json:"temperature,omitempty"`
-	Tools        []string          `yaml:"tools,omitempty" json:"tools,omitempty"`
+	// Tools, when omitted (nil), does not restrict tool visibility for this step.
+	// When present (including an empty YAML list), execution uses a whitelist: only the
+	// listed tools are exposed; empty list means no tools (text-only).
+	Tools *[]string `yaml:"tools,omitempty" json:"tools,omitempty"`
 	Interrupt    bool              `yaml:"interrupt,omitempty" json:"interrupt,omitempty"`
 	// Variables is an optional map of extra key-value pairs available as
 	// {{.vars.KEY}} in the prompt template.
@@ -73,7 +76,7 @@ workflow:
           model: string
           max_tokens: int
           temperature: float
-          tools: [tool_name]
+          tools: [tool_name]     # omit = all eligible tools; [] = none; ["a"] = whitelist
           interrupt: false         # pause for human approval after this agent
           variables:               # extra template variables
             key: value

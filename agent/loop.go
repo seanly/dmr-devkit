@@ -20,7 +20,10 @@ type runMode struct {
 	tapeContextOverride *tape.TapeContext
 	maxSteps            int // 0 = use Config.MaxSteps only; otherwise min(Config.MaxSteps, maxSteps)
 	excludeToolNames    map[string]struct{}
-	allowedToolNames    map[string]struct{} // if non-empty, only these tools may be used
+	// When toolWhitelist is true, only allowedToolNames are visible (may be empty = no tools).
+	// When false, allowedToolNames is ignored regardless of entries.
+	toolWhitelist    bool
+	allowedToolNames map[string]struct{}
 }
 
 // Run executes the agent loop: LLM call -> tool execution -> repeat.
@@ -39,15 +42,18 @@ func (a *Agent) RunWithOpts(ctx context.Context, tapeName, prompt string, histor
 	return a.RunWithOptsAndTools(ctx, tapeName, prompt, historyAfterEntryID, maxSteps, nil, contextJSON)
 }
 
-// RunWithOptsAndTools executes the agent loop with max steps, allowed tool whitelist, and plugin context.
-func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools []string, contextJSON string) (*Result, error) {
+// RunWithOptsAndTools executes the agent loop with max steps, optional tool whitelist, and plugin context.
+// allowedTools: nil means no whitelist (all eligible tools remain visible). Non-nil restricts to names
+// in *allowedTools; an empty pointed-to slice means no tools (text-only replies).
+func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools *[]string, contextJSON string) (*Result, error) {
 	var mode *runMode
-	if maxSteps > 0 || len(allowedTools) > 0 {
+	if maxSteps > 0 || allowedTools != nil {
 		mode = &runMode{maxSteps: maxSteps}
 	}
-	if len(allowedTools) > 0 {
-		mode.allowedToolNames = make(map[string]struct{}, len(allowedTools))
-		for _, name := range allowedTools {
+	if allowedTools != nil {
+		mode.toolWhitelist = true
+		mode.allowedToolNames = make(map[string]struct{}, len(*allowedTools))
+		for _, name := range *allowedTools {
 			mode.allowedToolNames[name] = struct{}{}
 		}
 	}
@@ -119,14 +125,15 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	toolCtx.State[tool.StateKeyRuntimeAgent] = a
 
 	// Parse and set plugin context if provided
+	var pluginContext map[string]any
 	if contextJSON != "" {
-		var pluginContext map[string]any
 		if err := json.Unmarshal([]byte(contextJSON), &pluginContext); err == nil {
 			toolCtx.Context = pluginContext
 		} else {
 			slog.Warn("agent: failed to parse plugin context JSON", "error", err)
 		}
 	}
+	stepSystemOverride := systemPromptOverrideFromPluginContext(pluginContext)
 
 	currentPrompt := prompt
 	consecutiveDenies := 0
@@ -146,7 +153,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			a.Handoff(tapeName, "session/start", map[string]any{"owner": "human"})
 		}
 	}
-	systemPrompt := a.resolveSystemPrompt(ctx, tapeName)
+	systemPrompt := mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
 	if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
@@ -163,7 +170,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	}
 
 	for step := 1; step <= maxSteps; step++ {
-		systemPrompt = a.resolveSystemPrompt(ctx, tapeName)
+		systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
 
 		// Re-collect tools each step to include newly discovered tools
 		// Cache the tool list per tape for the duration of this step; invalidated on discovery.
@@ -209,7 +216,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 						a.recordCompactStep(tapeName, step)
 
 						// Rebuild system prompt and continue with structured prompt
-						systemPrompt = a.resolveSystemPrompt(ctx, tapeName)
+						systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
 						if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
 							slog.Warn("tape append failed", "tape", tapeName, "error", err)
 						}
@@ -483,7 +490,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 
 					currentPrompt = continueAfterCompactPrompt
 
-					systemPrompt = a.resolveSystemPrompt(ctx, tapeName)
+					systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
 					if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
 						slog.Warn("tape append failed", "tape", tapeName, "error", err)
 					}
