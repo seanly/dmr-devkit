@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/seanly/dmr-devkit/agent/toolresult"
 	"github.com/seanly/dmr-devkit/client"
 	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/core"
@@ -21,7 +22,7 @@ import (
 	"github.com/seanly/dmr-devkit/tools/toolsearch"
 )
 
-const defaultToolResultMaxChars = 120000
+const defaultToolResultMaxChars = toolresult.DefaultMaxResultChars
 
 // Config configures the Agent.
 type Config struct {
@@ -66,6 +67,8 @@ type Agent struct {
 	extendedTools     []*tool.Tool // cached extended tools from all plugins
 	extendedToolsOnce sync.Once    // ensure extended tools are loaded once
 
+	toolResults *toolresult.Manager // large tool-output externalization + microcompact state
+
 	// Precomputed sorted prompt bases and tape models for fast lookup
 	precomputedPromptBases []struct{ pattern, prompt string }
 	precomputedTapeModels  []struct{ pattern, model string }
@@ -92,6 +95,7 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 		lastCompactStep: make(map[string]int),
 		discoveredTools: make(map[string]bool),
 		toolsCache:      make(map[string][]*tool.Tool),
+		toolResults:     toolresult.NewManager(buildToolResultPolicy(cfg)),
 	}
 	a.precomputePromptBases()
 	a.precomputeTapeModels()
@@ -383,14 +387,14 @@ func (a *Agent) completionMaxTokensForTape(tapeName string) int {
 	return m.ResolveCompletionMaxTokens(a.config.AgentPolicy)
 }
 
-// toolResultMaxCharsForTape resolves the effective truncation threshold for
-// role="tool" content for a given tape.
+// toolResultMaxCharsForTape resolves the effective externalize threshold (runes)
+// for role="tool" content for a given tape.
 //
 // Priority:
-//  1. model.ToolResultMaxChars (0=unset, -1=disable)
+//  1. model.ToolResultMaxChars (0=unset, -1=disable externalize)
 //  2. agent.AgentPolicy.ToolResultMaxChars (0=unset, -1=disable)
 //  3. Auto-calculated based on max_token and handoff_threshold
-//  4. defaultToolResultMaxChars (currently 120000)
+//  4. defaultToolResultMaxChars (50_000)
 func (a *Agent) toolResultMaxCharsForTape(tapeName string) int {
 	m := a.GetCurrentModel(tapeName)
 

@@ -68,8 +68,9 @@ func (a *Agent) resolveSystemPrompt(ctx context.Context, tapeName string) string
 	return a.hooks.ComposeSystemPrompt(ctx, base)
 }
 
-// truncateForProvider truncates s by character count (not bytes) to reduce the
-// chance of hitting strict provider input-size limits.
+// truncateForProvider truncates s by rune count (head+tail). Deprecated for normal tool
+// results — the agent loop uses toolresult.Manager (persist + preview) instead.
+// Kept for tests and emergency fallback when persistence fails.
 func truncateForProvider(s string, maxChars int) string {
 	if maxChars <= 0 || s == "" {
 		return s

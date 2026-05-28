@@ -145,13 +145,12 @@ type ModelConfig struct {
 	HandoffThreshold float64 `toml:"handoff_threshold"`
 	// CompletionMaxTokens is passed to the API as max completion tokens (OpenAI max_tokens / max_completion_tokens). 0 = omit (provider default).
 	CompletionMaxTokens int `toml:"completion_max_tokens"`
-	// ToolResultMaxChars caps the length of tool outputs that are sent back to
-	// the LLM as `role="tool"` content.
+	// ToolResultMaxChars configures when a single tool result is externalized to disk
+	// before being sent back as role="tool" content:
 	//
-	// Semantics:
-	//   - >0  : truncate to at most N characters
-	//   - -1  : disable truncation (send full tool output to LLM)
-	//   - 0   : unset; caller should fall back to its own default (currently 120000)
+	//   - >0  : values longer than N runes trigger workspace persistence (+ preview tag)
+	//   - -1  : never externalize; send full output (risk: context overflow)
+	//   - 0   : unset; fall back to agent policy, model policy, auto-calc, then default (~50k)
 	ToolResultMaxChars int `toml:"tool_result_max_chars"`
 	// TokenURL, ClientID, ClientSecret enable OAuth2 client_credentials against tokenURL
 	// (e.g. Keycloak .../protocol/openid-connect/token) for Authorization Bearer on each LLM request.
@@ -231,6 +230,24 @@ func (m *ModelConfig) ResolveHandoffThreshold(agentCfg AgentConfig) float64 {
 	return 0.8
 }
 
+// ToolResultMicrocompactConfig clears older compactable tool outputs on the wire before LLM requests.
+type ToolResultMicrocompactConfig struct {
+	Enabled          *bool    `toml:"enabled"`      // nil = not configured (use defaults); true/false = explicit
+	KeepRecent       int      `toml:"keep_recent"`
+	CompactableTools []string `toml:"compactable_tools"`
+	GapMinutes       float64  `toml:"gap_minutes"` // wall-clock gap since last assistant reply; 0 disables time trigger
+}
+
+// ToolResultPolicyConfig configures externalized tool payloads and aggregate budgets.
+type ToolResultPolicyConfig struct {
+	DefaultMaxChars  int    `toml:"default_max_chars"`
+	PerMessageBudget int    `toml:"per_message_budget"`
+	PreviewChars     int    `toml:"preview_chars"`
+	PersistSubdir    string `toml:"persist_subdir"`
+	SkipTools        []string `toml:"skip_tools"`
+	Microcompact     ToolResultMicrocompactConfig `toml:"microcompact"`
+}
+
 // AgentConfig configures the agent loop.
 type AgentConfig struct {
 	MaxSteps            int     `toml:"max_steps"`
@@ -238,6 +255,8 @@ type AgentConfig struct {
 	HandoffThreshold    float64 `toml:"handoff_threshold,omitempty"`
 	CompletionMaxTokens int     `toml:"completion_max_tokens,omitempty"` // 0 = omit in API requests
 	ToolResultMaxChars  int     `toml:"tool_result_max_chars,omitempty"`
+	// ToolResultPolicy configures persisting large tool outputs and microcompaction.
+	ToolResultPolicy ToolResultPolicyConfig `toml:"tool_result_policy,omitempty"`
 	// SystemPrompt can be either a string or array of strings (file paths)
 	// Use interface{} to allow both types, then convert in post-processing
 	SystemPromptRaw interface{}       `toml:"system_prompt,omitempty"`

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/seanly/dmr-devkit/agent/toolresult"
 	"github.com/seanly/dmr-devkit/core"
 	"github.com/seanly/dmr-devkit/provider"
 	"github.com/seanly/dmr-devkit/tape"
@@ -37,6 +39,8 @@ type ChatOpts struct {
 	HistoryAfterEntryID int
 	MaxToolRounds       int
 	ExtraHeaders        map[string]string
+	// ToolResultManager, when set with Tape, runs merge + microcompact on tape-loaded history before each request.
+	ToolResultManager *toolresult.Manager
 }
 
 // StreamState holds the accumulated state from a streaming response.
@@ -437,26 +441,29 @@ func (c *ChatClient) prepare(opts ChatOpts) (*preparedChat, error) {
 	if opts.Messages != nil {
 		msgs = opts.Messages
 	} else {
-		// Read from tape if specified
 		if opts.Tape != "" && c.Tape != nil {
+			var tapeMsgs []map[string]any
+			var err error
 			if opts.HistoryAfterEntryID > 0 {
 				entries, err := c.Tape.Store.FetchAll(opts.Tape, &tape.FetchOpts{AfterID: opts.HistoryAfterEntryID})
 				if err != nil {
 					return nil, core.NewError(core.ErrUnknown, "failed to read tape entries", err)
 				}
-				tbuilt := tape.NewNoAnchorContext().BuildMessages(entries)
-				msgs = append(msgs, tbuilt...)
+				tapeMsgs = tape.NewNoAnchorContext().BuildMessages(entries)
 			} else {
 				ctx := opts.Context
 				if ctx == nil {
 					ctx = tape.NewLastAnchorContext()
 				}
-				tapeMsgs, err := c.Tape.ReadMessages(opts.Tape, ctx)
+				tapeMsgs, err = c.Tape.ReadMessages(opts.Tape, ctx)
 				if err != nil {
 					return nil, core.NewError(core.ErrUnknown, "failed to read tape messages", err)
 				}
-				msgs = append(msgs, tapeMsgs...)
 			}
+			if opts.ToolResultManager != nil {
+				opts.ToolResultManager.PrepareWireMessages(opts.Tape, tapeMsgs, time.Now())
+			}
+			msgs = append(msgs, tapeMsgs...)
 		}
 
 		// Add system prompt

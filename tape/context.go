@@ -61,6 +61,8 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 					"content": "[Context Summary]\n" + content,
 				})
 			}
+		case "content_replacement":
+			// audit-only entry; not sent to LLM
 			// anchor, event, error entries are not sent to LLM
 		}
 	}

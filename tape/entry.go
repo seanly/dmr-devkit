@@ -118,6 +118,14 @@ func NewToolResultEntry(results []any, opts ...EntryOption) TapeEntry {
 	return newEntry("tool_result", map[string]any{"results": results}, opts...)
 }
 
+// NewContentReplacementEntry records a per-tool_call_id replacement string for audit/resume tooling.
+func NewContentReplacementEntry(toolCallID, replacement string, opts ...EntryOption) TapeEntry {
+	return newEntry("content_replacement", map[string]any{
+		"tool_call_id": toolCallID,
+		"replacement": replacement,
+	}, opts...)
+}
+
 func NewErrorEntry(kind core.ErrorKind, message string) TapeEntry {
 	return newEntry("error", map[string]any{"kind": string(kind), "message": message})
 }
@@ -183,6 +191,12 @@ func ExtractToolCalls(payload map[string]any) ([]ToolCallData, bool) {
 		out = append(out, tc)
 	}
 	return out, true
+}
+
+// FormatToolResultItem turns one executed tool output value into text for LLM transport.
+// It mirrors the normalization used when recording tape tool_result payloads.
+func FormatToolResultItem(r any) string {
+	return toolResultItemToString(r)
 }
 
 // toolResultItemToString turns one element of a tool_result "results" array into display text.

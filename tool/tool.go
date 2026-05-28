@@ -44,6 +44,10 @@ type ToolSpec struct {
 	// Used when Group is "extended" or "mcp".
 	// Example: "http, curl, download, html" for webFetch tool.
 	SearchHint string
+
+	// MaxResultChars controls when this tool's output is externalized to disk:
+	// 0 = use model/agent default; >0 = cap in runes; -1 = never externalize (send full output).
+	MaxResultChars int
 }
 
 // Tool defines a callable tool with its specification and runtime behavior.

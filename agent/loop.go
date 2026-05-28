@@ -195,6 +195,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			Context:             tapeCtx,
 			HistoryAfterEntryID: histAfter,
 			MaxTokens:           a.completionMaxTokensForTape(tapeName),
+			ToolResultManager:   a.toolResults,
 		}
 
 		// Get per-tape ChatClient
@@ -275,6 +276,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(assistantEntry)); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
 			}
+			a.toolResults.NoteAssistantTurn(tapeName, time.Now())
 			if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "ok"})); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
 			}
@@ -323,6 +325,14 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				}
 				msgs = append(msgs, assistantWithTools)
 
+				toolBy := make(map[string]*tool.Tool, len(tools))
+				for _, tt := range tools {
+					if tt != nil {
+						toolBy[tt.Spec.Name] = tt
+					}
+				}
+				cfgChars := a.toolResultMaxCharsForTape(tapeName)
+
 				// Add tool results
 				for i, tr := range result.ToolResults {
 					callID := ""
@@ -333,11 +343,13 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 						toolName = result.ToolCalls[i].Function.Name
 						toolArgs = result.ToolCalls[i].Function.Arguments
 					}
-					// Some providers (e.g. minimax) enforce strict request input-length limits.
-					// Tool outputs can be huge (e.g. curl/exec output); truncate to keep the
-					// next request within provider bounds.
-					maxChars := a.toolResultMaxCharsForTape(tapeName)
-					content := truncateForProvider(fmt.Sprintf("%v", tr), maxChars)
+					th := cfgChars
+					var tInst *tool.Tool
+					if toolName != "" {
+						tInst = toolBy[toolName]
+						th = a.toolResults.EffectiveThreshold(tInst, cfgChars, toolName)
+					}
+					content := a.toolResults.ProcessNew(th, tapeName, callID, toolName, tr)
 					msgs = append(msgs, map[string]any{
 						"role":         "tool",
 						"tool_call_id": callID,
@@ -367,6 +379,13 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 							}
 						}
 					}
+				}
+			}
+
+			a.toolResults.NoteAssistantTurn(tapeName, time.Now())
+			for _, r := range a.toolResults.ApplyTurnBudget(tapeName, msgs) {
+				if err := a.tape.AppendEntry(tapeName, tape.NewContentReplacementEntry(r.ToolCallID, r.Replacement)); err != nil {
+					slog.Warn("tape append content_replacement failed", "tape", tapeName, "error", err)
 				}
 			}
 
