@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/seanly/dmr-devkit/agent"
 	"github.com/seanly/dmr-devkit/tool"
@@ -20,6 +21,7 @@ const (
 	CapChat            Capability = "chat"
 	CapInterceptor     Capability = "interceptor"  // InterceptInput
 	CapLifecycle       Capability = "lifecycle"    // AfterAgentRun / DiscoveredToolsCleared
+	CapHTTP            Capability = "http"         // HTTP endpoint provider
 )
 
 // CapabilitySet returns all known capability constants as a slice.
@@ -32,6 +34,7 @@ func CapabilitySet() []Capability {
 		CapChat,
 		CapInterceptor,
 		CapLifecycle,
+		CapHTTP,
 	}
 }
 
@@ -101,6 +104,16 @@ type LifecycleHandler interface {
 	OnDiscoveredToolsCleared(ctx context.Context, tapeName string) error
 }
 
+// HTTPProvider is implemented by plugins that expose HTTP endpoints.
+// The webserver plugin acts as a gateway and mounts these routes under
+// /api/plugin/{plugin_name}/.
+type HTTPProvider interface {
+	// RegisterRoutes registers the plugin's HTTP handlers on the given mux.
+	// basePath is the prefix assigned to this plugin, e.g. "/api/plugin/kanban".
+	// The plugin should register handlers relative to basePath.
+	RegisterRoutes(mux *http.ServeMux, basePath string)
+}
+
 // ---------------------------------------------------------------------------
 // Capability inference and validation
 // ---------------------------------------------------------------------------
@@ -130,6 +143,9 @@ func InferCapabilities(p Plugin) []Capability {
 	}
 	if _, ok := p.(LifecycleHandler); ok {
 		caps = append(caps, CapLifecycle)
+	}
+	if _, ok := p.(HTTPProvider); ok {
+		caps = append(caps, CapHTTP)
 	}
 	return caps
 }
@@ -185,4 +201,10 @@ type TapeReaderSetter interface {
 // The ctrl argument is typed as any to avoid depending on the tape package.
 type TapeControlSetter interface {
 	SetTapeControl(ctrl any) error
+}
+
+// CapabilityRegistrySetter is implemented by plugins that need access to the
+// full capability registry (e.g. the webserver plugin to discover HTTPProviders).
+type CapabilityRegistrySetter interface {
+	SetCapabilityRegistry(r *Registry) error
 }

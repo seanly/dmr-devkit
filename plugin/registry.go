@@ -225,6 +225,19 @@ func (r *Registry) LifecycleHandlers() []LifecycleHandler {
 	return out
 }
 
+// HTTPProviders returns all registered plugins that implement HTTPProvider.
+func (r *Registry) HTTPProviders() []HTTPProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []HTTPProvider
+	for _, p := range r.pluginsForCap(CapHTTP) {
+		if pp, ok := p.(HTTPProvider); ok {
+			out = append(out, pp)
+		}
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
