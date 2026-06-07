@@ -70,20 +70,38 @@ func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string
 	return result, err
 }
 
-func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, mode *runMode, contextJSON string) (*Result, int, error) {
+func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, mode *runMode, contextJSON string) (result *Result, toolIterations int, err error) {
+	// --- Execution lifecycle tracking ---
+	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	agentID := ""
+	if model := a.GetCurrentModel(tapeName); model != nil {
+		agentID = model.Name
+	}
+	tc := tape.NewTapeController(a.tape)
+	_ = tc.RecordExecStart(tapeName, execID, agentID, nil)
+	_ = tc.RecordExecState(tapeName, execID, tape.ExecStatePending)
+	defer func() {
+		if err != nil {
+			_ = tc.RecordExecState(tapeName, execID, tape.ExecStateFailed)
+		} else if result != nil {
+			_ = tc.RecordExecState(tapeName, execID, tape.ExecStateCompleted)
+		}
+	}()
+	// ------------------------------------
+
 	// Auto-apply per-tape model from config (first time only; respects runtime ,model.switch).
 	a.mu.RLock()
 	_, hasOverride := a.modelOverrides[tapeName]
 	a.mu.RUnlock()
 	if !hasOverride {
 		if modelName := a.modelNameForTape(tapeName); modelName != "" {
-			if err := a.SwitchModel(tapeName, modelName); err != nil {
-				slog.Warn("tape model override failed", "model", modelName, "tape", tapeName, "error", err)
+			if switchErr := a.SwitchModel(tapeName, modelName); switchErr != nil {
+				slog.Warn("tape model override failed", "model", modelName, "tape", tapeName, "error", switchErr)
 			}
 		}
 	}
 
-	toolIterations := 0
+	toolIterations = 0
 
 	// InterceptInput hook: let extensions handle commands before LLM
 	ir, err := a.hooks.InterceptInput(ctx, InterceptInputArgs{

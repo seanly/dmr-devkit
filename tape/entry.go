@@ -259,3 +259,61 @@ func ExtractToolResults(payload map[string]any) ([]ToolResultData, bool) {
 	}
 	return out, true
 }
+
+// ---------------------------------------------------------------------------
+// Execution lifecycle entries (event-log semantics)
+// ---------------------------------------------------------------------------
+
+// ExecState represents the execution state of an agent run.
+type ExecState string
+
+const (
+	ExecStatePending   ExecState = "pending"
+	ExecStateCompleted ExecState = "completed"
+	ExecStateFailed    ExecState = "failed"
+)
+
+// NewExecStartEntry records the start of an execution.
+func NewExecStartEntry(execID, agentID string, config map[string]any, opts ...EntryOption) TapeEntry {
+	payload := map[string]any{
+		"exec_id":  execID,
+		"agent_id": agentID,
+	}
+	if config != nil {
+		payload["config"] = config
+	}
+	return newEntry("exec_start", payload, opts...)
+}
+
+// NewExecInputEntry records inputs (messages) sent to an agent during execution.
+func NewExecInputEntry(execID string, messages []map[string]any, opts ...EntryOption) TapeEntry {
+	return newEntry("exec_input", map[string]any{
+		"exec_id":  execID,
+		"messages": messages,
+	}, opts...)
+}
+
+// NewExecOutputEntry records outputs (messages) produced by an agent during execution.
+func NewExecOutputEntry(execID string, messages []map[string]any, opts ...EntryOption) TapeEntry {
+	return newEntry("exec_output", map[string]any{
+		"exec_id":  execID,
+		"messages": messages,
+	}, opts...)
+}
+
+// NewExecStateEntry records a state transition for an execution.
+func NewExecStateEntry(execID string, state ExecState, opts ...EntryOption) TapeEntry {
+	return newEntry("exec_state", map[string]any{
+		"exec_id": execID,
+		"state":   string(state),
+	}, opts...)
+}
+
+// NewForkEntry records a fork operation from one tape to another.
+func NewForkEntry(fromTape string, fromID int, toTape string, opts ...EntryOption) TapeEntry {
+	return newEntry("fork", map[string]any{
+		"from_tape": fromTape,
+		"from_id":   fromID,
+		"to_tape":   toTape,
+	}, opts...)
+}

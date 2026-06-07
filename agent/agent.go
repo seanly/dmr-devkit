@@ -537,6 +537,43 @@ func (a *Agent) SearchTools(query string) []*tool.Tool {
 	return tool.SearchTools(extended, query)
 }
 
+// Resume attempts to resume a pending execution on the given tape.
+// It replays the execution history and re-triggers the agent loop if the
+// execution is still pending and the agent ID has not changed.
+func (a *Agent) Resume(ctx context.Context, tapeName string) (*Result, error) {
+	tc := tape.NewTapeController(a.tape)
+
+	execID, err := tc.FindPendingExec(tapeName)
+	if err != nil {
+		return nil, fmt.Errorf("find pending exec: %w", err)
+	}
+	if execID == "" {
+		return nil, nil // nothing to resume
+	}
+
+	replay, err := tc.ReplayExec(tapeName, execID)
+	if err != nil {
+		return nil, fmt.Errorf("replay exec: %w", err)
+	}
+
+	// Check agent ID consistency
+	currentModel := a.GetCurrentModel(tapeName)
+	currentAgentID := ""
+	if currentModel != nil {
+		currentAgentID = currentModel.Name
+	}
+	if replay.AgentID != "" && replay.AgentID != currentAgentID {
+		return nil, fmt.Errorf("resumption rejected: agent changed from %s to %s", replay.AgentID, currentAgentID)
+	}
+
+	slog.Info("resuming pending execution", "tape", tapeName, "exec", execID, "state", replay.State)
+
+	// Re-trigger the agent loop with a continuation prompt.
+	// The tape already contains the user's original message, so we just
+	// ask the agent to continue processing.
+	return a.Run(ctx, tapeName, "Continue processing.", 0)
+}
+
 // Handoff creates an anchor and clears discovered tools for the tape.
 // This should be used instead of tape.Handoff() to ensure tool discovery
 // state is properly reset on handoff.

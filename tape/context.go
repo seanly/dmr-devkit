@@ -63,7 +63,8 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 			}
 		case "content_replacement":
 			// audit-only entry; not sent to LLM
-			// anchor, event, error entries are not sent to LLM
+			// anchor, event, error, exec_start, exec_input, exec_output,
+			// exec_state, fork entries are not sent to LLM
 		}
 	}
 	return messages

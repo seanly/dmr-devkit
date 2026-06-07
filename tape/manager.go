@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/seanly/dmr-devkit/core"
@@ -201,4 +202,224 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	}
 
 	return []TapeEntry{anchor, summaryEntry, event}, nil
+}
+
+// ---------------------------------------------------------------------------
+// TapeController — event-log semantics on top of TapeManager
+// ---------------------------------------------------------------------------
+
+// TapeController provides EventLog-style operations (execution tracking,
+// resumption, fork) while keeping the underlying store unchanged.
+type TapeController struct {
+	Manager *TapeManager
+}
+
+// NewTapeController creates a TapeController backed by the given manager.
+func NewTapeController(m *TapeManager) *TapeController {
+	return &TapeController{Manager: m}
+}
+
+// RecordExecStart records the beginning of an execution.
+func (tc *TapeController) RecordExecStart(tape, execID, agentID string, config map[string]any) error {
+	return tc.Manager.AppendEntry(tape, NewExecStartEntry(execID, agentID, config))
+}
+
+// RecordExecInput records messages sent as input to an execution.
+func (tc *TapeController) RecordExecInput(tape, execID string, messages []map[string]any) error {
+	return tc.Manager.AppendEntry(tape, NewExecInputEntry(execID, messages))
+}
+
+// RecordExecOutput records messages produced as output from an execution.
+func (tc *TapeController) RecordExecOutput(tape, execID string, messages []map[string]any) error {
+	return tc.Manager.AppendEntry(tape, NewExecOutputEntry(execID, messages))
+}
+
+// RecordExecState records a state transition for an execution.
+func (tc *TapeController) RecordExecState(tape, execID string, state ExecState) error {
+	return tc.Manager.AppendEntry(tape, NewExecStateEntry(execID, state))
+}
+
+// ExecReplay is the result of replaying an execution's history.
+type ExecReplay struct {
+	ExecID   string
+	AgentID  string
+	Config   map[string]any
+	Inputs   []map[string]any
+	Outputs  []map[string]any
+	State    ExecState
+	Messages []map[string]any // inputs + outputs merged in order
+}
+
+// extractMessages normalizes the "messages" field from a payload into []map[string]any.
+// It handles both []map[string]any (in-memory) and []any (deserialized from JSON).
+func extractMessages(payload map[string]any) []map[string]any {
+	var out []map[string]any
+
+	// Try []map[string]any first (in-memory store, no JSON round-trip).
+	if msgs, ok := payload["messages"].([]map[string]any); ok {
+		for _, m := range msgs {
+			out = append(out, m)
+		}
+		return out
+	}
+
+	// Fall back to []any (after JSON deserialization).
+	if msgs, ok := payload["messages"].([]any); ok {
+		for _, m := range msgs {
+			if msgMap, ok := m.(map[string]any); ok {
+				out = append(out, msgMap)
+			}
+		}
+	}
+	return out
+}
+
+// ReplayExec reconstructs an execution's history from tape entries.
+// If execID is empty, it replays all exec_* entries in the tape (sub-tape mode).
+func (tc *TapeController) ReplayExec(tape, execID string) (*ExecReplay, error) {
+	entries, err := tc.Manager.Store.FetchAll(tape, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch entries: %w", err)
+	}
+
+	var replay ExecReplay
+	replay.ExecID = execID
+
+	for _, e := range entries {
+		// When execID is set, skip entries that belong to a different execution.
+		if execID != "" {
+			eid, _ := e.Payload["exec_id"].(string)
+			if eid != "" && eid != execID {
+				continue
+			}
+		}
+
+		switch e.Kind {
+		case "exec_start":
+			if id, ok := e.Payload["exec_id"].(string); ok && id != "" {
+				replay.ExecID = id
+			}
+			if aid, ok := e.Payload["agent_id"].(string); ok {
+				replay.AgentID = aid
+			}
+			if cfg, ok := e.Payload["config"].(map[string]any); ok {
+				replay.Config = cfg
+			}
+		case "exec_input":
+			for _, msgMap := range extractMessages(e.Payload) {
+				replay.Inputs = append(replay.Inputs, msgMap)
+				replay.Messages = append(replay.Messages, msgMap)
+			}
+		case "exec_output":
+			for _, msgMap := range extractMessages(e.Payload) {
+				replay.Outputs = append(replay.Outputs, msgMap)
+				replay.Messages = append(replay.Messages, msgMap)
+			}
+		case "exec_state":
+			if s, ok := e.Payload["state"].(string); ok {
+				replay.State = ExecState(s)
+			}
+		}
+	}
+
+	return &replay, nil
+}
+
+// FindPendingExec scans a conversation tape and returns the exec_id of the
+// most recent execution whose final state is "pending". Returns empty string
+// if none found.
+func (tc *TapeController) FindPendingExec(tape string) (string, error) {
+	entries, err := tc.Manager.Store.FetchAll(tape, &FetchOpts{Kinds: []string{"exec_state"}})
+	if err != nil {
+		return "", fmt.Errorf("fetch exec_state entries: %w", err)
+	}
+
+	// Track the last known state per exec_id.
+	lastState := make(map[string]ExecState)
+	for _, e := range entries {
+		eid, _ := e.Payload["exec_id"].(string)
+		if eid == "" {
+			continue
+		}
+		if s, ok := e.Payload["state"].(string); ok {
+			lastState[eid] = ExecState(s)
+		}
+	}
+
+	// Return the most recent pending exec_id (last one in tape order).
+	for i := len(entries) - 1; i >= 0; i-- {
+		eid, _ := entries[i].Payload["exec_id"].(string)
+		if eid != "" && lastState[eid] == ExecStatePending {
+			return eid, nil
+		}
+	}
+	return "", nil
+}
+
+// ListConversations returns tape names that represent top-level conversations
+// (i.e. those without an ":exec:" segment).
+func (tc *TapeController) ListConversations() ([]string, error) {
+	all := tc.Manager.Store.ListTapes()
+	var convs []string
+	for _, t := range all {
+		if !strings.Contains(t, ":exec:") {
+			convs = append(convs, t)
+		}
+	}
+	return convs, nil
+}
+
+// ListExecs returns execution tape names that belong to a given conversation.
+func (tc *TapeController) ListExecs(convTape string) ([]string, error) {
+	prefix := convTape + ":exec:"
+	all := tc.Manager.Store.ListTapes()
+	var execs []string
+	for _, t := range all {
+		if strings.HasPrefix(t, prefix) {
+			execs = append(execs, t)
+		}
+	}
+	return execs, nil
+}
+
+// Fork copies entries with ID <= fromID from fromTape into toTape.
+func (tc *TapeController) Fork(fromTape string, fromID int, toTape string) error {
+	entries, err := tc.Manager.Store.FetchAll(fromTape, nil)
+	if err != nil {
+		return fmt.Errorf("fetch source tape: %w", err)
+	}
+
+	for _, e := range entries {
+		if e.ID > fromID {
+			continue
+		}
+		// Copy with zero ID so the store assigns a fresh one.
+		copyEntry := e
+		copyEntry.ID = 0
+		if err := tc.Manager.Store.Append(toTape, copyEntry); err != nil {
+			return fmt.Errorf("append forked entry: %w", err)
+		}
+	}
+
+	// Record the fork operation itself in the destination tape.
+	if err := tc.Manager.Store.Append(toTape, NewForkEntry(fromTape, fromID, toTape)); err != nil {
+		return fmt.Errorf("append fork entry: %w", err)
+	}
+	return nil
+}
+
+// CatchUp streams entries with ID > afterID from tape to the handler.
+func (tc *TapeController) CatchUp(tape string, afterID int, handler func(TapeEntry) error) error {
+	entries, err := tc.Manager.Store.FetchAll(tape, nil)
+	if err != nil {
+		return fmt.Errorf("fetch tape entries: %w", err)
+	}
+	for _, e := range entries {
+		if e.ID > afterID {
+			if err := handler(e); err != nil {
+				return fmt.Errorf("handler error at id %d: %w", e.ID, err)
+			}
+		}
+	}
+	return nil
 }
