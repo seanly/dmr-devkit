@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/seanly/dmr-devkit/devkit"
 	"github.com/seanly/dmr-devkit/workflow"
@@ -28,6 +29,8 @@ func (cw *CompiledWorkflow) Run(ctx context.Context, kit *devkit.Kit, input map[
 			} else {
 				res.Output = rendered
 			}
+		} else if res != nil {
+			res.Output = fmt.Sprintf("[return template error: %v]\n\nraw result:\n%v", rerr, res.Output)
 		}
 	}
 
@@ -55,6 +58,8 @@ func (cw *CompiledWorkflow) RunStream(ctx context.Context, kit *devkit.Kit, inpu
 	if cw.ReturnT != nil && lastResult != nil {
 		if rendered, rerr := cw.RenderReturn(wctx.State); rerr == nil {
 			lastResult.Output = rendered
+		} else {
+			lastResult.Output = fmt.Sprintf("[return template error: %v]\n\nraw result:\n%v", rerr, lastResult.Output)
 		}
 	}
 

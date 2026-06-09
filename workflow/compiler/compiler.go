@@ -43,7 +43,7 @@ func BuildGraph(def *dsl.WorkflowDef) (*CompiledWorkflow, error) {
 	for _, s := range def.Stages {
 		for _, a := range s.Agents {
 			key := promptKey(s.ID, a.ID)
-			tmpl, err := template.New(key).Parse(a.Prompt)
+			tmpl, err := template.New(key).Option("missingkey=zero").Parse(a.Prompt)
 			if err != nil {
 				return nil, fmt.Errorf("stage %q agent %q prompt template: %w", s.ID, a.ID, err)
 			}
@@ -55,7 +55,7 @@ func BuildGraph(def *dsl.WorkflowDef) (*CompiledWorkflow, error) {
 	var returnT *template.Template
 	if def.Return.Template != "" {
 		var err error
-		returnT, err = template.New("return").Parse(def.Return.Template)
+		returnT, err = template.New("return").Option("missingkey=zero").Parse(def.Return.Template)
 		if err != nil {
 			return nil, fmt.Errorf("return template: %w", err)
 		}
@@ -64,7 +64,7 @@ func BuildGraph(def *dsl.WorkflowDef) (*CompiledWorkflow, error) {
 	// Pre-compile save_files templates.
 	saveFiles := make(map[string]*template.Template)
 	for fname, contentTmpl := range def.Return.SaveFiles {
-		tmpl, err := template.New("save:"+fname).Parse(contentTmpl)
+		tmpl, err := template.New("save:"+fname).Option("missingkey=zero").Parse(contentTmpl)
 		if err != nil {
 			return nil, fmt.Errorf("save_files %q template: %w", fname, err)
 		}
