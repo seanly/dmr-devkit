@@ -146,6 +146,7 @@ type runMode struct {
     excludeToolNames    map[string]struct{} // Tools to hide
     toolWhitelist       bool               // Enable whitelist
     allowedToolNames    map[string]struct{} // Whitelisted tools
+    subagents           []string           // Delegation allowlist (empty/nil = no delegation)
 }
 ```
 
@@ -191,13 +192,43 @@ Agents can delegate to subagents via the `subagent.go` mechanism:
 
 ```go
 // In a tool handler, create a subagent run
-subResult, err := agent.RunWithOpts(ctx, subTape, task, 0, maxSteps, contextJSON)
+subResult, err := agent.RunSubagentWithTools(
+    ctx, parentTape, prompt, modelName, session, contextJSON,
+    maxSteps, allowedTools, subagents,
+)
 ```
 
 Key behaviors:
 - Subagent uses its own tape (isolated history)
-- Parent can limit subagent's visible tools
+- Parent can limit subagent's visible tools via `allowedTools`
+- Parent controls whether the subagent may further delegate via `subagents`
 - Subagent results are summarized back to parent
+
+### Delegation Control (`subagents`)
+
+The `subagents` parameter is an allowlist of skill names the subagent may delegate to:
+
+| Value | Behavior |
+|-------|----------|
+| `nil` or `[]string{}` | **No delegation** — `skillDelegate` is removed from the subagent's tool set |
+| `[]string{"researcher"}` | Only `skillDelegate(skill="researcher")` is allowed |
+
+This prevents unbounded nesting (A → B → C → D). Maximum nesting depth is capped at `subagentMaxDepth = 3`.
+
+### Folded Delegation Tool
+
+Instead of generating one `delegate_{name}` tool per agent skill, the system exposes a single `skillDelegate` tool with a dynamic `enum` listing all available agent skills. This keeps the function-calling schema constant regardless of how many skills are installed.
+
+### Example: Creating a Non-Delegating Subagent
+
+```go
+// Subagent can only use search and read_url; it cannot delegate further
+out, err := agent.RunSubagentWithTools(
+    ctx, "main", task, "cheap", "temp", "", 8,
+    []string{"search", "read_url"},   // allowedTools
+    []string{},                       // subagents: empty = no delegation
+)
+```
 
 ---
 

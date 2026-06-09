@@ -33,7 +33,7 @@ Body from first path.
 	assert.Contains(t, skills[0].Location, "local")
 }
 
-func TestSynthesizeDelegationTools_NoDuplicateNames(t *testing.T) {
+func TestSkillDelegateTool_EnumContainsAgentSkills(t *testing.T) {
 	tmp := t.TempDir()
 	auto := filepath.Join(tmp, "auto")
 	skillDir := filepath.Join(auto, "book-to-insight-pipeline")
@@ -52,10 +52,14 @@ Body.
 	cfg.AutoCreatePath = auto // also scanned via resolvedRoots; must not duplicate
 	mgr := NewManager(cfg)
 
-	tools := mgr.synthesizeDelegationTools()
-	names := make(map[string]int)
-	for _, tl := range tools {
-		names[tl.Spec.Name]++
-	}
-	assert.Equal(t, 1, names["delegate_book-to-insight-pipeline"])
+	tool := mgr.delegateTool()
+	assert.Equal(t, "delegate", tool.Spec.Name)
+
+	props, ok := tool.Spec.Parameters["properties"].(map[string]any)
+	require.True(t, ok)
+	skillProp, ok := props["skill"].(map[string]any)
+	require.True(t, ok)
+	enum, ok := skillProp["enum"].([]string)
+	require.True(t, ok)
+	assert.Contains(t, enum, "book-to-insight-pipeline")
 }

@@ -221,6 +221,30 @@ allowed := []string{"memoryRead"}
 res, err := kit.Agent.RunWithOptsAndTools(ctx, tapeName, prompt, historyAfterEntryID, maxSteps, &allowed, contextJSON)
 ```
 
+### Subagent Execution
+
+```go
+// Simple subagent run (inherits all tools, no further delegation)
+out, err := kit.Agent.RunSubagent(ctx, parentTape, prompt, modelName, session, contextJSON, maxSteps)
+
+// Controlled subagent run with tool whitelist and delegation allowlist
+out, err := kit.Agent.RunSubagentWithTools(
+    ctx, parentTape, prompt, modelName, session, contextJSON, maxSteps,
+    []string{"search", "read_url"},  // allowedTools: nil = all, [] = none
+    []string{"summarizer"},          // subagents: nil/[] = no delegation
+)
+```
+
+| Param | Description |
+|-------|-------------|
+| `parentTape` | Parent tape name; subagent tape becomes `parentTape:subagent:<id>` |
+| `modelName` | `""` or `"inherit"` to use parent's model; otherwise switch to named model |
+| `session` | `"temp"` (default, scoped to job anchor) or `"inherit"` (full child tape) |
+| `contextJSON` | Optional JSON map injected as system message on child tape |
+| `maxSteps` | Max tool iterations for this subagent (0 = default 12, scaled by depth) |
+| `allowedTools` | Tool whitelist; `nil` = no restriction, `[]string{}` = text-only |
+| `subagents` | Delegation allowlist; `nil` or `[]string{}` = remove `skillDelegate` from tools |
+
 ---
 
 ## Tape Names and Isolation

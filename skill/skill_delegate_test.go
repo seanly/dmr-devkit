@@ -34,7 +34,8 @@ func (m *mockRuntimeAgent) SetOnToolCall(func(agent.ToolCallEvent)) {}
 func (m *mockRuntimeAgent) RunSubagent(context.Context, string, string, string, string, string, int) (string, error) {
 	return "", nil
 }
-func (m *mockRuntimeAgent) RunSubagentWithTools(_ context.Context, _, _, modelName, _, contextJSON string, maxSteps int, allowedTools []string) (string, error) {
+func (m *mockRuntimeAgent) SetDefaultTape(string) {}
+func (m *mockRuntimeAgent) RunSubagentWithTools(_ context.Context, _, _, modelName, _, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (string, error) {
 	m.lastModel = modelName
 	m.lastMaxSteps = maxSteps
 	m.lastAllowed = allowedTools
@@ -77,7 +78,7 @@ You are a research specialist.
 		State: map[string]any{"_runtime_agent": mock},
 	}
 
-	res, err := mgr.handleSkillDelegate(ctx, map[string]any{
+	res, err := mgr.handleDelegate(ctx, map[string]any{
 		"skill": "researcher",
 		"task":  "Find Go 1.24 release notes",
 	})
@@ -117,7 +118,7 @@ You are a summarizer.
 		State: map[string]any{"_runtime_agent": mock},
 	}
 
-	res, err := mgr.handleSkillDelegate(ctx, map[string]any{
+	res, err := mgr.handleDelegate(ctx, map[string]any{
 		"skill": "summarizer",
 		"task":  "Summarize this",
 	})
@@ -138,7 +139,7 @@ func TestHandleSkillDelegate_NotFound(t *testing.T) {
 		State: map[string]any{"_runtime_agent": &mockRuntimeAgent{}},
 	}
 
-	res, err := mgr.handleSkillDelegate(ctx, map[string]any{
+	res, err := mgr.handleDelegate(ctx, map[string]any{
 		"skill": "ghost",
 		"task":  "do something",
 	})
@@ -165,7 +166,7 @@ func TestHandleSkillDelegate_NotAgent(t *testing.T) {
 		State: map[string]any{"_runtime_agent": &mockRuntimeAgent{}},
 	}
 
-	res, err := mgr.handleSkillDelegate(ctx, map[string]any{
+	res, err := mgr.handleDelegate(ctx, map[string]any{
 		"skill": "plain",
 		"task":  "do something",
 	})
@@ -188,7 +189,7 @@ func TestHandleSkillDelegate_NoRuntimeAgent(t *testing.T) {
 	mgr := NewManager(cfg)
 
 	ctx := &tool.ToolContext{Tape: "main", State: map[string]any{}}
-	res, err := mgr.handleSkillDelegate(ctx, map[string]any{
+	res, err := mgr.handleDelegate(ctx, map[string]any{
 		"skill": "researcher",
 		"task":  "find something",
 	})
@@ -196,4 +197,87 @@ func TestHandleSkillDelegate_NoRuntimeAgent(t *testing.T) {
 	m := res.(map[string]any)
 	assert.False(t, m["success"].(bool))
 	assert.Contains(t, m["error"].(string), "no runtime agent")
+}
+
+func TestHandleSkillDelegate_SubagentAllowlist_Allowed(t *testing.T) {
+	tmp := t.TempDir()
+	researcherDir := filepath.Join(tmp, "researcher")
+	require.NoError(t, os.MkdirAll(researcherDir, 0o755))
+	loc := filepath.Join(researcherDir, "SKILL.md")
+	content := "---\nname: researcher\ndescription: Research\ntype: agent\n---\nbody\n"
+	require.NoError(t, os.WriteFile(loc, []byte(content), 0o600))
+
+	cfg := DefaultConfig()
+	cfg.Paths = []string{tmp}
+	mgr := NewManager(cfg)
+
+	mock := &mockRuntimeAgent{outputs: []string{"allowed result"}}
+	ctx := &tool.ToolContext{
+		Tape:  "main",
+		State: map[string]any{"_runtime_agent": mock, "subagent_allowlist": []string{"researcher"}},
+	}
+
+	res, err := mgr.handleDelegate(ctx, map[string]any{
+		"skill": "researcher",
+		"task":  "find something",
+	})
+	require.NoError(t, err)
+	m := res.(map[string]any)
+	assert.True(t, m["success"].(bool))
+	assert.Equal(t, "allowed result", m["output"].(string))
+}
+
+func TestHandleSkillDelegate_SubagentAllowlist_Denied(t *testing.T) {
+	tmp := t.TempDir()
+	researcherDir := filepath.Join(tmp, "researcher")
+	summarizerDir := filepath.Join(tmp, "summarizer")
+	require.NoError(t, os.MkdirAll(researcherDir, 0o755))
+	require.NoError(t, os.MkdirAll(summarizerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researcherDir, "SKILL.md"), []byte("---\nname: researcher\ndescription: Research\ntype: agent\n---\nbody\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(summarizerDir, "SKILL.md"), []byte("---\nname: summarizer\ndescription: Summarize\ntype: agent\n---\nbody\n"), 0o600))
+
+	cfg := DefaultConfig()
+	cfg.Paths = []string{tmp}
+	mgr := NewManager(cfg)
+
+	mock := &mockRuntimeAgent{outputs: []string{"should not reach"}}
+	ctx := &tool.ToolContext{
+		Tape:  "main",
+		State: map[string]any{"_runtime_agent": mock, "subagent_allowlist": []string{"researcher"}},
+	}
+
+	res, err := mgr.handleDelegate(ctx, map[string]any{
+		"skill": "summarizer",
+		"task":  "summarize this",
+	})
+	require.NoError(t, err)
+	m := res.(map[string]any)
+	assert.False(t, m["success"].(bool))
+	assert.Contains(t, m["error"].(string), "not allowed")
+}
+
+func TestHandleSkillDelegate_SubagentAllowlist_NoAllowlist(t *testing.T) {
+	tmp := t.TempDir()
+	researcherDir := filepath.Join(tmp, "researcher")
+	require.NoError(t, os.MkdirAll(researcherDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researcherDir, "SKILL.md"), []byte("---\nname: researcher\ndescription: Research\ntype: agent\n---\nbody\n"), 0o600))
+
+	cfg := DefaultConfig()
+	cfg.Paths = []string{tmp}
+	mgr := NewManager(cfg)
+
+	mock := &mockRuntimeAgent{outputs: []string{"allowed result"}}
+	ctx := &tool.ToolContext{
+		Tape:  "main",
+		State: map[string]any{"_runtime_agent": mock},
+	}
+
+	res, err := mgr.handleDelegate(ctx, map[string]any{
+		"skill": "researcher",
+		"task":  "find something",
+	})
+	require.NoError(t, err)
+	m := res.(map[string]any)
+	assert.True(t, m["success"].(bool))
+	assert.Equal(t, "allowed result", m["output"].(string))
 }

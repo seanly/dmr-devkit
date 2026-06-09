@@ -28,13 +28,14 @@ const subagentMaxDepth = 3
 // contextJSON: optional JSON string injected as a system message on the child tape.
 // maxSteps: optional step cap (0 means fall back to subagentMaxSteps scaled by depth).
 func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (string, error) {
-	return a.RunSubagentWithTools(ctx, parentTape, prompt, modelName, session, contextJSON, maxSteps, nil)
+	return a.RunSubagentWithTools(ctx, parentTape, prompt, modelName, session, contextJSON, maxSteps, nil, nil)
 }
 
 // RunSubagentWithTools runs a sub-agent with an optional tool whitelist.
 // allowedTools: nil means do not whitelist (usual tool discovery applies). Non-nil restricts to the
 // given names—an empty non-nil slice (e.g. from YAML []) removes all tools.
-func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string) (string, error) {
+// subagents: nil or empty means the sub-agent may not delegate to other skills.
+func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (string, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return "", core.NewError(core.ErrInvalidInput, "subagent: empty prompt", nil)
 	}
@@ -105,10 +106,17 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 	mode := &runMode{
 		tapeContextOverride: tc,
 		maxSteps:            effectiveMaxSteps,
+		subagents:           subagents,
 	}
-	// Only ban recursive subagent when we've hit max depth.
+
+	// Exclude delegation tools when subagent has no explicit delegation allowlist,
+	// or when max nesting depth is reached.
+	mode.excludeToolNames = make(map[string]struct{})
+	if len(subagents) == 0 || depth+1 >= subagentMaxDepth {
+		mode.excludeToolNames["delegate"] = struct{}{}
+	}
 	if depth+1 >= subagentMaxDepth {
-		mode.excludeToolNames = map[string]struct{}{"subagent": {}}
+		mode.excludeToolNames["spawn"] = struct{}{}
 	}
 
 	if allowedTools != nil {

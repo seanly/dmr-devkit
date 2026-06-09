@@ -48,8 +48,8 @@ type RuntimeAgent interface {
 	// Sub-agent execution (used by subagent plugin)
 	RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (string, error)
 
-	// Sub-agent execution with tool whitelist.
-	RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string) (string, error)
+	// Sub-agent execution with tool whitelist and subagent delegation allowlist.
+	RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (string, error)
 
 	// SetDefaultTape sets the canonical tape name for this session (used by CLI
 	// so that ,tape.switch commands resolve relative to a stable key).

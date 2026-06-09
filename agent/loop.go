@@ -24,6 +24,9 @@ type runMode struct {
 	// When false, allowedToolNames is ignored regardless of entries.
 	toolWhitelist    bool
 	allowedToolNames map[string]struct{}
+	// Subagents is the allowlist of skill names this agent may delegate to.
+	// Empty or nil means the agent cannot delegate to any subagent.
+	subagents []string
 }
 
 // Run executes the agent loop: LLM call -> tool execution -> repeat.
@@ -143,6 +146,9 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	toolCtx.State[tool.StateKeyTapeStore] = a.tape.Store
 	toolCtx.State[tool.StateKeyTapeManager] = a.tape
 	toolCtx.State[tool.StateKeyRuntimeAgent] = a
+	if mode != nil && len(mode.subagents) > 0 {
+		toolCtx.State["subagent_allowlist"] = mode.subagents
+	}
 
 	// Parse and set plugin context if provided
 	var pluginContext map[string]any

@@ -136,9 +136,8 @@ func (m *Manager) allTools() []*tool.Tool {
 		m.skillListTool(),
 		m.skillEditTool(),
 		m.skillDeleteTool(),
-		m.skillDelegateTool(),
+		m.delegateTool(),
 	}
-	tools = append(tools, m.synthesizeDelegationTools()...)
 	return tools
 }
 
@@ -268,7 +267,7 @@ func (m *Manager) buildSystemPrompt() (string, error) {
 			lines = append(lines, "  </specialist>")
 		}
 		lines = append(lines, "</available_specialists>")
-		lines = append(lines, "To delegate to a specialist, call skillDelegate(skill=<name>, task=<description>).")
+		lines = append(lines, "To delegate to a specialist, call delegate(skill=<name>, task=<description>).")
 	}
 
 	// Inject structured reasoning prompt when agent skills are active.

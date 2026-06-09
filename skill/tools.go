@@ -328,19 +328,20 @@ func (m *Manager) handleSkillDelete(_ *tool.ToolContext, args map[string]any) (a
 	return map[string]any{"success": true, "deleted": dir}, nil
 }
 
-// --- skillDelegate ---
+// --- delegate ---
 
-func (m *Manager) skillDelegateTool() *tool.Tool {
+func (m *Manager) delegateTool() *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "skillDelegate",
-			Description: "Delegate a task to a specialist skill agent.",
+			Name:        "delegate",
+			Description: "Delegate a task to a specialist skill agent. Available specialists: " + strings.Join(m.agentSkillNames(), ", ") + ".",
 			Group:       m.toolGroup,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"skill": map[string]any{
 						"type":        "string",
+						"enum":        m.agentSkillNames(),
 						"description": "Agent skill name to delegate to",
 					},
 					"task": map[string]any{
@@ -351,12 +352,23 @@ func (m *Manager) skillDelegateTool() *tool.Tool {
 				"required": []string{"skill", "task"},
 			},
 		},
-		Handler:     m.handleSkillDelegate,
+		Handler:     m.handleDelegate,
 		NeedContext: true,
 	}
 }
 
-func (m *Manager) handleSkillDelegate(ctx *tool.ToolContext, args map[string]any) (any, error) {
+func (m *Manager) agentSkillNames() []string {
+	m.ensureSkillsFresh()
+	var names []string
+	for _, s := range m.skills {
+		if s.Type == "agent" {
+			names = append(names, s.Name)
+		}
+	}
+	return names
+}
+
+func (m *Manager) handleDelegate(ctx *tool.ToolContext, args map[string]any) (any, error) {
 	skillID := strings.ToLower(strings.TrimSpace(args["skill"].(string)))
 	task := strings.TrimSpace(args["task"].(string))
 
@@ -367,10 +379,28 @@ func (m *Manager) handleSkillDelegate(ctx *tool.ToolContext, args map[string]any
 		return map[string]any{"success": false, "error": "task is required"}, nil
 	}
 
+	// Enforce subagent delegation allowlist when running inside a subagent context.
+	if allowlistRaw, ok := ctx.State["subagent_allowlist"]; ok {
+		allowlist, ok := allowlistRaw.([]string)
+		if !ok {
+			return map[string]any{"success": false, "error": "invalid subagent allowlist state"}, nil
+		}
+		allowed := false
+		for _, allowedSkill := range allowlist {
+			if strings.ToLower(strings.TrimSpace(allowedSkill)) == skillID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return map[string]any{"success": false, "error": fmt.Sprintf("delegation to %q not allowed by this agent's subagents configuration", skillID)}, nil
+		}
+	}
+
 	return m.runSkillDelegation(ctx, skillID, task)
 }
 
-// runSkillDelegation is the shared implementation for skillDelegate and synthesized delegate_* tools.
+// runSkillDelegation is the shared implementation for delegate and synthesized delegate_* tools.
 func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string) (any, error) {
 	m.ensureSkillsFresh()
 	var sk *Skill
@@ -420,7 +450,7 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 		modelName = ""
 	}
 
-	output, err := ag.RunSubagentWithTools(subCtx, ctx.Tape, task, modelName, "temp", contextJSON, maxSteps, sk.ToolAllowlist)
+	output, err := ag.RunSubagentWithTools(subCtx, ctx.Tape, task, modelName, "temp", contextJSON, maxSteps, sk.ToolAllowlist, sk.Subagents)
 
 	if sk.MaxResultChars > 0 {
 		runes := []rune(output)
@@ -435,50 +465,3 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 	return map[string]any{"success": true, "output": output}, nil
 }
 
-// synthesizeDelegationTools generates one delegate_{skill} tool per agent skill.
-// These are surfaced directly in the LLM's function-calling schema so the orchestrator
-// can route without explicitly calling skillDelegate.
-func (m *Manager) synthesizeDelegationTools() []*tool.Tool {
-	m.ensureSkillsFresh()
-	var out []*tool.Tool
-	for _, sk := range m.skills {
-		if sk.Type != "agent" {
-			continue
-		}
-		name := "delegate_" + sk.Name
-		desc := sk.WhenToUse
-		if desc == "" {
-			desc = sk.Description
-		}
-		// Tag the description so the orchestrator knows this is a delegation tool.
-		desc = "[delegate] " + desc
-
-		skillID := sk.Name // capture for closure
-		out = append(out, &tool.Tool{
-			Spec: tool.ToolSpec{
-				Name:        name,
-				Description: desc,
-				Group:       m.toolGroup,
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"task": map[string]any{
-							"type":        "string",
-							"description": "Task description for the specialist",
-						},
-					},
-					"required": []string{"task"},
-				},
-			},
-			Handler: func(ctx *tool.ToolContext, args map[string]any) (any, error) {
-				task := strings.TrimSpace(args["task"].(string))
-				if task == "" {
-					return map[string]any{"success": false, "error": "task is required"}, nil
-				}
-				return m.runSkillDelegation(ctx, skillID, task)
-			},
-			NeedContext: true,
-		})
-	}
-	return out
-}
