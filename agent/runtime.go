@@ -4,8 +4,9 @@ import "context"
 
 // InterceptResult is returned by InterceptInput hook to short-circuit the agent loop.
 type InterceptResult struct {
-	Output string // command output text
-	Kind   string // "command" for renderer styling
+	Output     string // command output text
+	Kind       string // "command" for renderer styling
+	SwitchTape string // non-empty: caller should switch to this tape for the next run
 }
 
 // ModelInfo describes a configured model.
@@ -27,6 +28,7 @@ type RunResult struct {
 	Steps            int
 	PromptTokens     int
 	CompletionTokens int
+	SwitchTape       string // non-empty: caller should switch to this tape for the next run
 }
 
 // RuntimeAgent is the interface that plugins use to interact with the agent.
@@ -48,6 +50,10 @@ type RuntimeAgent interface {
 
 	// Sub-agent execution with tool whitelist.
 	RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string) (string, error)
+
+	// SetDefaultTape sets the canonical tape name for this session (used by CLI
+	// so that ,tape.switch commands resolve relative to a stable key).
+	SetDefaultTape(tape string)
 }
 
 // InterceptInputArgs holds the typed arguments for the InterceptInput hook.
@@ -58,6 +64,8 @@ type InterceptInputArgs struct {
 	TapeStore    any // tape.TapeStore — uses any to avoid import cycles in plugins
 	TapeManager  any // *tape.TapeManager
 	RuntimeAgent RuntimeAgent
+	TapeControl  any // plugin.TapeControl — uses any to avoid import cycles in plugins
+	DefaultTape  string // canonical session tape; empty means same as TapeName
 }
 
 // AfterAgentRunArgs holds typed arguments for AfterAgentRun hook handlers.

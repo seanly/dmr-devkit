@@ -43,6 +43,8 @@ type Config struct {
 	Models     []config.ModelConfig
 	OnToolCall func(event ToolCallEvent) // optional callback for tool call display
 	OnUIWidget func(widget any)          // optional callback for A2UI widget payloads
+	TapeControl any                      // plugin.TapeControl — injected by host
+	DefaultTape  string                  // canonical session tape for stable override keys
 }
 
 // Agent orchestrates multi-turn LLM + tool execution.
@@ -72,6 +74,22 @@ type Agent struct {
 	// Precomputed sorted prompt bases and tape models for fast lookup
 	precomputedPromptBases []struct{ pattern, prompt string }
 	precomputedTapeModels  []struct{ pattern, model string }
+}
+
+// SetTapeControl injects the TapeControl dependency.
+func (a *Agent) SetTapeControl(tc any) {
+	a.mu.Lock()
+	a.config.TapeControl = tc
+	a.mu.Unlock()
+}
+
+// SetDefaultTape sets the canonical session tape name used by interceptors for
+// stable override keys (e.g. CLI REPL so ,tape.switch resolves relative to the
+// original session tape regardless of current effective tape).
+func (a *Agent) SetDefaultTape(tape string) {
+	a.mu.Lock()
+	a.config.DefaultTape = tape
+	a.mu.Unlock()
 }
 
 // New creates a new Agent.
