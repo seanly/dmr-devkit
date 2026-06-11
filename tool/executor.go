@@ -173,8 +173,12 @@ func (e *ToolExecutor) executeSerial(
 		out, err := rc.tool.Handler(ctx, rc.args)
 		if err != nil {
 			if e.Verbose >= 1 {
-				se, _ := core.AsStructured(err)
-				slog.Info("tool handler error", "tool", name, "kind", se.Kind, "error", err)
+				se, ok := core.AsStructured(err)
+				if ok {
+					slog.Info("tool handler error", "tool", name, "kind", se.Kind, "error", err)
+				} else {
+					slog.Info("tool handler error", "tool", name, "error", err)
+				}
 			}
 			ep := errorPayloadForTool(name, err, core.ErrTool)
 			result.ToolResults = append(result.ToolResults, map[string]any{
@@ -297,8 +301,12 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 			r := subagentResults[i]
 			if r.err != nil {
 				if e.Verbose >= 1 {
-					se, _ := core.AsStructured(r.err)
-					slog.Info("tool handler error", "tool", name, "mode", "parallel", "kind", se.Kind, "error", r.err)
+					se, ok := core.AsStructured(r.err)
+					if ok {
+						slog.Info("tool handler error", "tool", name, "mode", "parallel", "kind", se.Kind, "error", r.err)
+					} else {
+						slog.Info("tool handler error", "tool", name, "mode", "parallel", "error", r.err)
+					}
 				}
 				ep := errorPayloadForTool(name, r.err, core.ErrTool)
 				result.ToolResults = append(result.ToolResults, map[string]any{
@@ -322,8 +330,12 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 		out, err := rc.tool.Handler(ctx, rc.args)
 		if err != nil {
 			if e.Verbose >= 1 {
-				se, _ := core.AsStructured(err)
-				slog.Info("tool handler error", "tool", name, "kind", se.Kind, "error", err)
+				se, ok := core.AsStructured(err)
+				if ok {
+					slog.Info("tool handler error", "tool", name, "kind", se.Kind, "error", err)
+				} else {
+					slog.Info("tool handler error", "tool", name, "error", err)
+				}
 			}
 			ep := errorPayloadForTool(name, err, core.ErrTool)
 			result.ToolResults = append(result.ToolResults, map[string]any{
