@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"sync"
+
+	"github.com/seanly/dmr-devkit/scope"
 )
 
 // Parallel executes its sub-nodes concurrently and returns a slice of results
@@ -44,13 +45,13 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 		}
 
 		outcomes := make([]branchOutcome, len(p.Nodes))
-		var wg sync.WaitGroup
+		s := scope.Root(ctx, "parallel:"+p.WorkflowName)
+		defer s.Close()
 
 		for i, n := range p.Nodes {
-			wg.Add(1)
-			go func(idx int, node Node) {
-				defer wg.Done()
-
+			idx := i
+			node := n
+			s.Go(node.Name(), func(scopedCtx context.Context) error {
 				fork := wctx.WithMetadata(nil)
 				fork.Step = wctx.Step + idx
 
@@ -58,10 +59,10 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 				// goroutine and cache them for the main goroutine to yield.
 				if es, ok := node.(EventStream); ok {
 					var bevents []*Event
-					for ev, err := range es.RunEvents(ctx, fork, input) {
+					for ev, err := range es.RunEvents(scopedCtx, fork, input) {
 						if err != nil {
 							outcomes[idx] = branchOutcome{idx: idx, node: node, err: err}
-							return
+							return nil
 						}
 						bevents = append(bevents, ev)
 					}
@@ -72,15 +73,16 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 						}
 					}
 					outcomes[idx] = branchOutcome{idx: idx, node: node, out: out, events: bevents}
-					return
+					return nil
 				}
 
-				out, err := runNode(ctx, fork, fork.Step, node, input)
+				out, err := runNode(scopedCtx, fork, fork.Step, node, input)
 				outcomes[idx] = branchOutcome{idx: idx, node: node, out: out, err: err}
-			}(i, n)
+				return nil
+			})
 		}
 
-		wg.Wait()
+		s.Wait()
 
 		results := make([]any, len(p.Nodes))
 		var errs []error

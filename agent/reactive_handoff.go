@@ -34,7 +34,8 @@ func (a *Agent) handleContextOverflow(
 	// 1. Compact history
 	if err := a.CompactTapeWithName(ctx, tapeName, handoffName); err != nil {
 		slog.Error("compact failed", "error", err)
-		return false, core.NewError(core.ErrTemporary, fmt.Sprintf("auto-compact failed at step %d", step), err)
+		return false, core.New(core.ErrKindTemporary, fmt.Sprintf("auto-compact failed at step %d", step)).
+			Phase(core.PhaseCompact).Cause(err).With("step", step).Build()
 	}
 
 	// 2. Extract last round information
@@ -158,6 +159,16 @@ func (a *Agent) restartContextWithPrompt(ctx context.Context, tapeName, prompt s
 }
 
 // isContextOverflowError checks if an error is a context overflow error.
+// It matches both legacy RepublicError (ErrInvalidInput) and new StructuredError
+// (ErrKindContextOverflow) for backward and forward compatibility.
 func isContextOverflowError(err error) bool {
-	return err != nil && core.IsErrorKind(err, core.ErrInvalidInput)
+	if err == nil {
+		return false
+	}
+	// Legacy path
+	if core.IsErrorKind(err, core.ErrInvalidInput) {
+		return true
+	}
+	// Structured path
+	return core.IsKind(err, core.ErrKindContextOverflow)
 }

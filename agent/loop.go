@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -118,12 +117,10 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		DefaultTape:  a.config.DefaultTape,
 	})
 	if err != nil {
-		kind := core.ErrUnknown
-		var re *core.RepublicError
-		if errors.As(err, &re) {
-			kind = re.Kind
-		}
-		return nil, 0, core.NewError(kind, fmt.Sprintf("intercept: %v", err), err)
+		return nil, 0, core.FromError(err).
+			Phase(core.PhaseIntercept).
+			With("tape", tapeName).
+			Build()
 	}
 	if ir != nil {
 		if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("command", map[string]any{
@@ -264,6 +261,13 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		// Check BeforeToolCall hooks will be done inside executor
 		result, err := chatClient.RunTools(ctx, opts)
 		if err != nil {
+			// Wrap with structured metadata so downstream recovery dispatch is uniform.
+			err = core.FromError(err).
+				Phase(core.PhaseLLMCall).
+				With("step", step).
+				With("tape", tapeName).
+				Build()
+
 			// Auto-compact on context overflow: compact and replay last round
 			if !autoHandoffDone && isContextOverflowError(err) {
 				handled, handoffErr := a.handleContextOverflow(ctx, tapeName, step, currentPrompt)
@@ -275,12 +279,14 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					continue
 				}
 			}
-			kind := core.ErrUnknown
-			var re *core.RepublicError
-			if errors.As(err, &re) {
-				kind = re.Kind
+
+			// Log transient failures with structured context for observability.
+			if se, ok := core.AsStructured(err); ok && se.IsRetryable() {
+				slog.Warn("agent step transient failure",
+					"step", step, "kind", se.Kind,
+					"source", se.Source, "action", se.Action)
 			}
-			return nil, toolIterations, core.NewError(kind, fmt.Sprintf("step %d failed", step), err)
+			return nil, toolIterations, err
 		}
 
 		// Capture token usage from the latest successful LLM call (best effort).
@@ -550,14 +556,18 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 
 		case "error":
 			if result.Error != nil {
-				return nil, toolIterations, core.NewError(result.Error.Kind, fmt.Sprintf("step %d: %s", step, result.Error.Message), nil)
+				return nil, toolIterations, core.New(core.ErrKind(result.Error.Kind), fmt.Sprintf("step %d: %s", step, result.Error.Message)).
+					Phase(core.PhaseLLMCall).With("step", step).Build()
 			}
-			return nil, toolIterations, core.NewError(core.ErrUnknown, fmt.Sprintf("step %d: unknown error", step), nil)
+			return nil, toolIterations, core.New(core.ErrKindUnknown, fmt.Sprintf("step %d: unknown error", step)).
+				Phase(core.PhaseLLMCall).With("step", step).Build()
 
 		default:
-			return nil, toolIterations, core.NewError(core.ErrUnknown, fmt.Sprintf("step %d: unexpected result kind: %s", step, result.Kind), nil)
+			return nil, toolIterations, core.New(core.ErrKindUnknown, fmt.Sprintf("step %d: unexpected result kind: %s", step, result.Kind)).
+				Phase(core.PhaseLLMCall).With("step", step).With("kind", result.Kind).Build()
 		}
 	}
 
-	return nil, toolIterations, core.NewError(core.ErrUnknown, fmt.Sprintf("max steps reached (%d)", maxSteps), nil)
+	return nil, toolIterations, core.New(core.ErrKindUnknown, fmt.Sprintf("max steps reached (%d)", maxSteps)).
+		Phase(core.PhaseLLMCall).With("max_steps", maxSteps).Build()
 }

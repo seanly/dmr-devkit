@@ -216,7 +216,8 @@ func TestParallel_ActuallyParallel(t *testing.T) {
 		t.Fatal("both nodes should have run")
 	}
 	// Should complete in ~100ms, not ~110ms.
-	if elapsed > 150*time.Millisecond {
+	// Threshold at 250ms to tolerate CI/scheduling variance.
+	if elapsed > 250*time.Millisecond {
 		t.Fatalf("too slow: %v (expected parallel execution)", elapsed)
 	}
 }

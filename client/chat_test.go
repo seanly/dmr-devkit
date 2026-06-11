@@ -264,8 +264,9 @@ func TestRunToolsExecutesAndReturnsResult(t *testing.T) {
 	if result.Kind != "tools" {
 		t.Errorf("kind = %q", result.Kind)
 	}
-	if len(result.ToolResults) != 1 || result.ToolResults[0] != "ECHO:tokyo" {
-		t.Errorf("results = %v", result.ToolResults)
+	want := "[LIVE DATA from echo]\nECHO:tokyo"
+	if len(result.ToolResults) != 1 || result.ToolResults[0] != want {
+		t.Errorf("results = %v, want %q", result.ToolResults, want)
 	}
 }
 
@@ -299,8 +300,10 @@ func TestRunToolsSplitsConcatenatedArgs(t *testing.T) {
 	if len(result.ToolResults) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResults))
 	}
-	if result.ToolResults[0] != "tokyo!" || result.ToolResults[1] != "osaka!" {
-		t.Errorf("results = %v", result.ToolResults)
+	want0 := "[LIVE DATA from echo]\ntokyo!"
+	want1 := "[LIVE DATA from echo]\nosaka!"
+	if result.ToolResults[0] != want0 || result.ToolResults[1] != want1 {
+		t.Errorf("results = %v, want %q, %q", result.ToolResults, want0, want1)
 	}
 }
 
@@ -426,8 +429,9 @@ func TestStreamEventsAllKinds(t *testing.T) {
 	// Check tool result value
 	for _, e := range events {
 		if e.Kind == core.StreamToolResult {
-			if e.Data["result"] != "tokyo!" {
-				t.Errorf("tool result = %v", e.Data["result"])
+			want := "[LIVE DATA from echo]\ntokyo!"
+			if e.Data["result"] != want {
+				t.Errorf("tool result = %v, want %q", e.Data["result"], want)
 			}
 		}
 	}

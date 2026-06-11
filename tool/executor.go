@@ -162,10 +162,7 @@ func (e *ToolExecutor) executeSerial(
 			if e.Verbose >= 1 {
 				slog.Info("tool denied", "tool", name, "error", err)
 			}
-			ep := &core.ErrorPayload{
-				Kind:    core.ErrDenied,
-				Message: fmt.Sprintf("tool %q denied: %v", call.Function.Name, err),
-			}
+			ep := errorPayloadForTool(name, err, core.ErrDenied)
 			result.ToolResults = append(result.ToolResults, map[string]any{
 				"kind":    string(ep.Kind),
 				"message": ep.Message,
@@ -176,12 +173,10 @@ func (e *ToolExecutor) executeSerial(
 		out, err := rc.tool.Handler(ctx, rc.args)
 		if err != nil {
 			if e.Verbose >= 1 {
-				slog.Info("tool handler error", "tool", name, "error", err)
+				se, _ := core.AsStructured(err)
+				slog.Info("tool handler error", "tool", name, "kind", se.Kind, "error", err)
 			}
-			ep := &core.ErrorPayload{
-				Kind:    core.ErrTool,
-				Message: fmt.Sprintf("tool %q handler error: %v", call.Function.Name, err),
-			}
+			ep := errorPayloadForTool(name, err, core.ErrTool)
 			result.ToolResults = append(result.ToolResults, map[string]any{
 				"kind":    string(ep.Kind),
 				"message": ep.Message,
@@ -288,10 +283,7 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 			if e.Verbose >= 1 {
 				slog.Info("tool denied", "tool", name, "error", err)
 			}
-			ep := &core.ErrorPayload{
-				Kind:    core.ErrDenied,
-				Message: fmt.Sprintf("tool %q denied: %v", call.Function.Name, err),
-			}
+			ep := errorPayloadForTool(name, err, core.ErrDenied)
 			result.ToolResults = append(result.ToolResults, map[string]any{
 				"kind":    string(ep.Kind),
 				"message": ep.Message,
@@ -305,12 +297,10 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 			r := subagentResults[i]
 			if r.err != nil {
 				if e.Verbose >= 1 {
-					slog.Info("tool handler error", "tool", name, "mode", "parallel", "error", r.err)
+					se, _ := core.AsStructured(r.err)
+					slog.Info("tool handler error", "tool", name, "mode", "parallel", "kind", se.Kind, "error", r.err)
 				}
-				ep := &core.ErrorPayload{
-					Kind:    core.ErrTool,
-					Message: fmt.Sprintf("tool %q handler error: %v", call.Function.Name, r.err),
-				}
+				ep := errorPayloadForTool(name, r.err, core.ErrTool)
 				result.ToolResults = append(result.ToolResults, map[string]any{
 					"kind":    string(ep.Kind),
 					"message": ep.Message,
@@ -332,12 +322,10 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 		out, err := rc.tool.Handler(ctx, rc.args)
 		if err != nil {
 			if e.Verbose >= 1 {
-				slog.Info("tool handler error", "tool", name, "error", err)
+				se, _ := core.AsStructured(err)
+				slog.Info("tool handler error", "tool", name, "kind", se.Kind, "error", err)
 			}
-			ep := &core.ErrorPayload{
-				Kind:    core.ErrTool,
-				Message: fmt.Sprintf("tool %q handler error: %v", call.Function.Name, err),
-			}
+			ep := errorPayloadForTool(name, err, core.ErrTool)
 			result.ToolResults = append(result.ToolResults, map[string]any{
 				"kind":    string(ep.Kind),
 				"message": ep.Message,
@@ -524,6 +512,21 @@ func cloneArgs(args map[string]any) map[string]any {
 	var cloned map[string]any
 	_ = json.Unmarshal(b, &cloned)
 	return cloned
+}
+
+// errorPayloadForTool converts any error into a core.ErrorPayload,
+// preserving StructuredError kind and message when available.
+func errorPayloadForTool(toolName string, err error, defaultKind core.ErrorKind) *core.ErrorPayload {
+	if se, ok := core.AsStructured(err); ok {
+		return &core.ErrorPayload{
+			Kind:    core.ErrorKind(se.Kind),
+			Message: se.Message,
+		}
+	}
+	return &core.ErrorPayload{
+		Kind:    defaultKind,
+		Message: fmt.Sprintf("tool %q handler error: %v", toolName, err),
+	}
 }
 
 func cloneToolContext(ctx *ToolContext) *ToolContext {

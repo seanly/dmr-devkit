@@ -157,8 +157,9 @@ func TestExecuteSimpleTool(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if len(result.ToolResults) != 1 || result.ToolResults[0] != "hello" {
-		t.Errorf("result = %v", result.ToolResults)
+	want := "[LIVE DATA from echo]\nhello"
+	if len(result.ToolResults) != 1 || result.ToolResults[0] != want {
+		t.Errorf("result = %v, want %q", result.ToolResults, want)
 	}
 }
 
@@ -176,8 +177,9 @@ func TestExecuteToolWithJSONStringArgs(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.ToolResults[0] != "world" {
-		t.Errorf("result = %v", result.ToolResults[0])
+	want := "[LIVE DATA from echo]\nworld"
+	if result.ToolResults[0] != want {
+		t.Errorf("result = %q, want %q", result.ToolResults[0], want)
 	}
 }
 
@@ -249,8 +251,9 @@ func TestExecuteToolWithContext(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.ToolResults[0] != "hello" {
-		t.Error("result mismatch")
+	want := "[LIVE DATA from write_note]\nhello"
+	if result.ToolResults[0] != want {
+		t.Errorf("result = %q, want %q", result.ToolResults[0], want)
 	}
 	if ctx.State["title"] != "hello" {
 		t.Error("context state not modified")
@@ -309,8 +312,9 @@ func TestExecuteMultipleTools(t *testing.T) {
 	if len(result.ToolResults) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResults))
 	}
-	if result.ToolResults[0] != "hi" {
-		t.Errorf("echo result = %v", result.ToolResults[0])
+	wantEcho := "[LIVE DATA from echo]\nhi"
+	if result.ToolResults[0] != wantEcho {
+		t.Errorf("echo result = %q, want %q", result.ToolResults[0], wantEcho)
 	}
 	if result.ToolResults[1] != float64(3) {
 		t.Errorf("add result = %v", result.ToolResults[1])

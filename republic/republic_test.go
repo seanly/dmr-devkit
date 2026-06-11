@@ -224,8 +224,9 @@ func TestRunToolsEndToEnd(t *testing.T) {
 	if result.Kind != "tools" {
 		t.Errorf("kind = %q", result.Kind)
 	}
-	if len(result.ToolResults) != 1 || result.ToolResults[0] != "ECHO:tokyo" {
-		t.Errorf("results = %v", result.ToolResults)
+	want := "[LIVE DATA from echo]\nECHO:tokyo"
+	if len(result.ToolResults) != 1 || result.ToolResults[0] != want {
+		t.Errorf("results = %v, want %q", result.ToolResults, want)
 	}
 }
 
