@@ -41,7 +41,10 @@ type ChatOpts struct {
 	ExtraHeaders        map[string]string
 	// ToolResultManager, when set with Tape, runs merge + microcompact on tape-loaded history before each request.
 	ToolResultManager *toolresult.Manager
-}
+		// PromptParts carries multi-modal content (images) alongside Prompt.
+		// When non-empty, builds a multi-part (image_url + text) message.
+		PromptParts []provider.ContentPart
+	}
 
 // StreamState holds the accumulated state from a streaming response.
 type StreamState struct {
@@ -471,9 +474,18 @@ func (c *ChatClient) prepare(opts ChatOpts) (*preparedChat, error) {
 			msgs = append([]map[string]any{{"role": "system", "content": opts.SystemPrompt}}, msgs...)
 		}
 
-		// Add current prompt
+		// Add current prompt (with optional multi-modal parts)
 		if opts.Prompt != "" {
-			msgs = append(msgs, map[string]any{"role": "user", "content": opts.Prompt})
+			msg := map[string]any{"role": "user", "content": opts.Prompt}
+			if len(opts.PromptParts) > 0 {
+				parts := make([]any, 0, len(opts.PromptParts)+1)
+				parts = append(parts, map[string]any{"type": "text", "text": opts.Prompt})
+				for _, p := range opts.PromptParts {
+					parts = append(parts, provider.ContentPartToMap(p))
+				}
+				msg["parts"] = parts
+			}
+			msgs = append(msgs, msg)
 		}
 	}
 	p.messages = collapseSystemMessages(msgs)
@@ -733,3 +745,5 @@ func (f *thinkFilter) Flush() string {
 	f.buf.Reset()
 	return s
 }
+
+

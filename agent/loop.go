@@ -10,6 +10,7 @@ import (
 
 	"github.com/seanly/dmr-devkit/client"
 	"github.com/seanly/dmr-devkit/core"
+	"github.com/seanly/dmr-devkit/provider"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
 )
@@ -26,6 +27,9 @@ type runMode struct {
 	// Subagents is the allowlist of skill names this agent may delegate to.
 	// Empty or nil means the agent cannot delegate to any subagent.
 	subagents []string
+	// promptParts carries multi-modal content (images) from the caller.
+	// These are included in the tape entry and ChatOpts for the first LLM call.
+	promptParts []provider.ContentPart
 }
 
 // Run executes the agent loop: LLM call -> tool execution -> repeat.
@@ -49,7 +53,9 @@ func (a *Agent) RunWithOpts(ctx context.Context, tapeName, prompt string, histor
 // in *allowedTools; an empty pointed-to slice means no tools (text-only replies).
 func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools *[]string, contextJSON string) (*Result, error) {
 	var mode *runMode
-	if maxSteps > 0 || allowedTools != nil {
+	// Always create mode when contextJSON carries extra data (e.g. image parts)
+	// or when there are runtime constraints (maxSteps, allowedTools).
+	if maxSteps > 0 || allowedTools != nil || contextJSON != "" {
 		mode = &runMode{maxSteps: maxSteps}
 	}
 	if allowedTools != nil {
@@ -158,6 +164,35 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	}
 	stepSystemOverride := systemPromptOverrideFromPluginContext(pluginContext)
 
+	// Extract multi-modal prompt parts from plugin context (set by feishu/web etc.)
+	// "_dmr_prompt_parts" is a JSON array of part objects (text/image_url).
+	if mode != nil && pluginContext != nil {
+		if raw, ok := pluginContext["_dmr_prompt_parts"]; ok {
+			slog.Debug("agent: found _dmr_prompt_parts in pluginContext",
+				"tape", tapeName, "count_hint", fmt.Sprintf("%T", raw))
+			if rawArr, ok := raw.([]any); ok {
+				for _, rp := range rawArr {
+					if pm, ok := rp.(map[string]any); ok {
+						cp := provider.ContentPartFromMap(pm)
+						if cp != nil {
+							mode.promptParts = append(mode.promptParts, cp)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check if the current model supports vision; clear parts if not.
+	if mode != nil && len(mode.promptParts) > 0 {
+		model := a.GetCurrentModel(tapeName)
+		if model != nil && !model.SupportsVision() {
+			mode.promptParts = nil
+			slog.Debug("agent: cleared image parts — model does not support vision",
+				"model", model.Name, "tape", tapeName)
+		}
+	}
+
 	currentPrompt := prompt
 	consecutiveDenies := 0
 	autoHandoffDone := false
@@ -180,7 +215,17 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
-	if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{"role": "user", "content": prompt})); err != nil {
+	// Include multi-modal parts in the user message entry when provided
+	userPayload := map[string]any{"role": "user", "content": prompt}
+	if mode != nil && len(mode.promptParts) > 0 {
+		parts := make([]any, 0, len(mode.promptParts)+1)
+		parts = append(parts, map[string]any{"type": "text", "text": prompt})
+		for _, p := range mode.promptParts {
+			parts = append(parts, provider.ContentPartToMap(p))
+		}
+		userPayload["parts"] = parts
+	}
+	if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(userPayload)); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
 
@@ -219,6 +264,9 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			HistoryAfterEntryID: histAfter,
 			MaxTokens:           a.completionMaxTokensForTape(tapeName),
 			ToolResultManager:   a.toolResults,
+		}
+		if mode != nil && len(mode.promptParts) > 0 {
+			opts.PromptParts = mode.promptParts
 		}
 
 		// Get per-tape ChatClient

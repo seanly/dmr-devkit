@@ -30,6 +30,39 @@ type ImagePart struct {
 func (TextPart) isContentPart() {}
 func (ImagePart) isContentPart() {}
 
+// ContentPartFromMap converts a JSON-like map into a ContentPart.
+// Expected formats:
+//
+//	{"type": "text", "text": "hello"}
+//	{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+func ContentPartFromMap(m map[string]any) ContentPart {
+	typ, _ := m["type"].(string)
+	switch typ {
+	case "text":
+		if text, ok := m["text"].(string); ok {
+			return TextPart{Text: text}
+		}
+	case "image_url":
+		if iu, ok := m["image_url"].(map[string]any); ok {
+			if url, ok := iu["url"].(string); ok {
+				return ImagePart{URL: url}
+			}
+		}
+	}
+	return nil
+}
+
+// ContentPartToMap converts a ContentPart to a map suitable for JSON serialization.
+func ContentPartToMap(p ContentPart) map[string]any {
+	switch part := p.(type) {
+	case TextPart:
+		return map[string]any{"type": "text", "text": part.Text}
+	case ImagePart:
+		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": part.URL}}
+	}
+	return nil
+}
+
 // Message represents a chat message.
 type Message struct {
 	Role             string        `json:"role"`

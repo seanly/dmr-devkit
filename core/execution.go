@@ -348,6 +348,24 @@ func (c *LLMCore) buildChatRequest(model string, opts RunChatOpts) provider.Chat
 			Role:    role,
 			Content: content,
 		}
+
+		// Multi-modal parts: when present, takes precedence over Content.
+		// Each part is a map with a "type" key: "text" or "image_url".
+		if rawParts, ok := m["parts"].([]any); ok && len(rawParts) > 0 {
+			var cps []provider.ContentPart
+			for _, rp := range rawParts {
+				if pm, ok := rp.(map[string]any); ok {
+					cp := provider.ContentPartFromMap(pm)
+					if cp != nil {
+						cps = append(cps, cp)
+					}
+				}
+			}
+			if len(cps) > 0 {
+				msg.Parts = cps
+			}
+		}
+
 		if toolCallID, ok := m["tool_call_id"].(string); ok {
 			msg.ToolCallID = toolCallID
 		}

@@ -166,6 +166,10 @@ type ModelConfig struct {
 	// HTTPClientTimeout is seconds for the entire HTTP request (headers + reading body).
 	// 0 = use default (15 minutes). If set shorter than http_response_header_timeout, the client raises it.
 	HTTPClientTimeout int `toml:"http_client_timeout"`
+	// SupportsVision indicates this model supports multi-modal (image) input.
+	// When false, the system will not send image content parts to this model.
+	// Defaults to true (most modern models support vision).
+	VisionEnabled *bool `toml:"supports_vision"`
 }
 
 // HTTPTimeouts returns optional per-model HTTP timeouts for the OpenAI-compatible client.
@@ -228,6 +232,16 @@ func (m *ModelConfig) ResolveHandoffThreshold(agentCfg AgentConfig) float64 {
 		return agentCfg.HandoffThreshold
 	}
 	return 0.8
+}
+
+// SupportsVision returns true if this model supports multi-modal image input.
+// Defaults to true when unset (most modern models support vision).
+// Configure via [[models]] supports_vision = false in TOML.
+func (m *ModelConfig) SupportsVision() bool {
+	if m == nil || m.VisionEnabled == nil {
+		return true
+	}
+	return *m.VisionEnabled
 }
 
 // ToolResultMicrocompactConfig clears older compactable tool outputs on the wire before LLM requests.
