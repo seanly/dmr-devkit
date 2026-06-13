@@ -597,6 +597,9 @@ func (a *Agent) Resume(ctx context.Context, tapeName string) (*Result, error) {
 // state is properly reset on handoff.
 func (a *Agent) Handoff(tapeName, name string, state map[string]any) {
 	a.ClearDiscoveredTools(tapeName)
+	if err := a.hooks.OnContextReset(context.Background(), tapeName, "handoff"); err != nil {
+		slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
+	}
 	if _, err := a.tape.Handoff(tapeName, name, state); err != nil {
 		slog.Warn("tape handoff failed", "name", name, "error", err)
 	}

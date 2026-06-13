@@ -22,6 +22,7 @@ const (
 	CapInterceptor     Capability = "interceptor"  // InterceptInput
 	CapLifecycle       Capability = "lifecycle"    // AfterAgentRun / DiscoveredToolsCleared
 	CapHTTP            Capability = "http"         // HTTP endpoint provider
+	CapContextReset    Capability = "context-reset" // OnContextReset
 )
 
 // CapabilitySet returns all known capability constants as a slice.
@@ -35,6 +36,7 @@ func CapabilitySet() []Capability {
 		CapInterceptor,
 		CapLifecycle,
 		CapHTTP,
+		CapContextReset,
 	}
 }
 
@@ -104,6 +106,14 @@ type LifecycleHandler interface {
 	OnDiscoveredToolsCleared(ctx context.Context, tapeName string) error
 }
 
+// ContextResetHandler is implemented by plugins that need to refresh state
+// when the agent conversation context is reset (handoff or compact).
+type ContextResetHandler interface {
+	// OnContextReset is called when the agent conversation context is reset.
+	// reason is one of: "handoff", "compact".
+	OnContextReset(ctx context.Context, tapeName string, reason string) error
+}
+
 // HTTPProvider is implemented by plugins that expose HTTP endpoints.
 // The webserver plugin acts as a gateway and mounts these routes under
 // /api/plugin/{plugin_name}/.
@@ -146,6 +156,9 @@ func InferCapabilities(p Plugin) []Capability {
 	}
 	if _, ok := p.(HTTPProvider); ok {
 		caps = append(caps, CapHTTP)
+	}
+	if _, ok := p.(ContextResetHandler); ok {
+		caps = append(caps, CapContextReset)
 	}
 	return caps
 }

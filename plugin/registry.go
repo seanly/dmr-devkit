@@ -225,6 +225,19 @@ func (r *Registry) LifecycleHandlers() []LifecycleHandler {
 	return out
 }
 
+// ContextResetHandlers returns all registered plugins that implement ContextResetHandler.
+func (r *Registry) ContextResetHandlers() []ContextResetHandler {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []ContextResetHandler
+	for _, p := range r.pluginsForCap(CapContextReset) {
+		if pp, ok := p.(ContextResetHandler); ok {
+			out = append(out, pp)
+		}
+	}
+	return out
+}
+
 // HTTPProviders returns all registered plugins that implement HTTPProvider.
 func (r *Registry) HTTPProviders() []HTTPProvider {
 	r.mu.RLock()

@@ -25,6 +25,9 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName string) (strin
 	// Clear discovered tools on compact/handoff
 	// This resets tool discovery state, requiring model to use toolSearch again
 	a.ClearDiscoveredTools(tapeName)
+	if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+		slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
+	}
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
 		Tape:       tapeName,

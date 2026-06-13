@@ -92,6 +92,8 @@ func (testHooks) InterceptInput(context.Context, agent.InterceptInputArgs) (*age
 
 func (testHooks) OnDiscoveredToolsCleared(context.Context, string) error { return nil }
 
+func (testHooks) OnContextReset(context.Context, string, string) error { return nil }
+
 func (testHooks) BeforeToolCall(context.Context, *tool.Tool, map[string]any, *tool.ToolContext) error {
 	return nil
 }

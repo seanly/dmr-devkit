@@ -115,6 +115,9 @@ func (m *Manager) InterceptInput(context.Context, agent.InterceptInputArgs) (*ag
 // OnDiscoveredToolsCleared implements agent.Hooks.
 func (m *Manager) OnDiscoveredToolsCleared(context.Context, string) error { return nil }
 
+// OnContextReset implements agent.Hooks.
+func (m *Manager) OnContextReset(context.Context, string, string) error { return nil }
+
 // BeforeToolCall implements agent.Hooks.
 func (m *Manager) BeforeToolCall(context.Context, *tool.Tool, map[string]any, *tool.ToolContext) error {
 	return nil

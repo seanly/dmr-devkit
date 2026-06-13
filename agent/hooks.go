@@ -14,6 +14,7 @@ type Hooks interface {
 	AfterAgentRun(ctx context.Context, args AfterAgentRunArgs) error
 	InterceptInput(ctx context.Context, args InterceptInputArgs) (*InterceptResult, error)
 	OnDiscoveredToolsCleared(ctx context.Context, tapeName string) error
+	OnContextReset(ctx context.Context, tapeName string, reason string) error
 	BeforeToolCall(ctx context.Context, t *tool.Tool, args map[string]any, toolCtx *tool.ToolContext) error
 	BatchBeforeToolCall(ctx context.Context, items []tool.BatchCheckItem) map[int]error
 }
@@ -31,6 +32,8 @@ func (noopHooks) InterceptInput(context.Context, InterceptInputArgs) (*Intercept
 }
 
 func (noopHooks) OnDiscoveredToolsCleared(context.Context, string) error { return nil }
+
+func (noopHooks) OnContextReset(context.Context, string, string) error { return nil }
 
 func (noopHooks) BeforeToolCall(context.Context, *tool.Tool, map[string]any, *tool.ToolContext) error {
 	return nil

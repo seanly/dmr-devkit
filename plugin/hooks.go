@@ -133,6 +133,19 @@ func (h *RegistryHooks) OnDiscoveredToolsCleared(ctx context.Context, tapeName s
 	return nil
 }
 
+// OnContextReset calls all ContextResetHandlers.
+func (h *RegistryHooks) OnContextReset(ctx context.Context, tapeName string, reason string) error {
+	if h.registry == nil {
+		return nil
+	}
+	for _, cr := range h.registry.ContextResetHandlers() {
+		if err := cr.OnContextReset(ctx, tapeName, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // BeforeToolCall checks all PolicyCheckers.
 func (h *RegistryHooks) BeforeToolCall(ctx context.Context, t *tool.Tool, args map[string]any, toolCtx *tool.ToolContext) error {
 	if h.registry == nil {

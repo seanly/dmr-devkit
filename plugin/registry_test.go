@@ -61,6 +61,19 @@ func (m *mockLifecycle) OnDiscoveredToolsCleared(ctx context.Context, tapeName s
 	return nil
 }
 
+type mockContextReset struct {
+	mockPlugin
+	resetTapeName string
+	resetReason   string
+	resetErr      error
+}
+
+func (m *mockContextReset) OnContextReset(ctx context.Context, tapeName string, reason string) error {
+	m.resetTapeName = tapeName
+	m.resetReason = reason
+	return m.resetErr
+}
+
 // ---------------------------------------------------------------------------
 // Register / Unregister
 // ---------------------------------------------------------------------------
@@ -142,6 +155,27 @@ func TestRegistry_HasCapability(t *testing.T) {
 	p := &mockToolProvider{mockPlugin: mockPlugin{name: "t", caps: []Capability{CapTools}}, tools: nil}
 	require.NoError(t, r.Register(p))
 	assert.True(t, r.HasCapability(CapTools))
+}
+
+func TestRegistry_ContextResetHandlers(t *testing.T) {
+	r := NewRegistry()
+	p := &mockContextReset{mockPlugin: mockPlugin{name: "cr", caps: []Capability{CapContextReset}}}
+	require.NoError(t, r.Register(p))
+
+	handlers := r.ContextResetHandlers()
+	require.Len(t, handlers, 1)
+	assert.Equal(t, "cr", handlers[0].(Plugin).Name())
+}
+
+func TestRegistry_RegisterContextResetCapabilityMismatch(t *testing.T) {
+	r := NewRegistry()
+	// Declares CapContextReset but does not implement ContextResetHandler.
+	p := &mockPlugin{name: "bad", caps: []Capability{CapContextReset}}
+	assert.ErrorContains(t, r.Register(p), `capability "context-reset" but does not implement`)
+
+	// Implements ContextResetHandler but does not declare CapContextReset.
+	p2 := &mockContextReset{mockPlugin: mockPlugin{name: "bad2", caps: []Capability{}}}
+	assert.ErrorContains(t, r.Register(p2), `implements capability "context-reset" interface but does not declare`)
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +277,33 @@ func TestRegistryHooks_CollectAllToolsReportsError(t *testing.T) {
 	assert.Empty(t, tools)
 	require.Len(t, reported, 1)
 	assert.ErrorContains(t, reported[0], `plugin "bad" ListTools error: nope`)
+}
+
+func TestRegistryHooks_OnContextReset(t *testing.T) {
+	r := NewRegistry()
+	p := &mockContextReset{mockPlugin: mockPlugin{name: "cr", caps: []Capability{CapContextReset}}}
+	require.NoError(t, r.Register(p))
+
+	h := NewRegistryHooks(r)
+	err := h.OnContextReset(context.Background(), "test-tape", "compact")
+	require.NoError(t, err)
+	assert.Equal(t, "test-tape", p.resetTapeName)
+	assert.Equal(t, "compact", p.resetReason)
+}
+
+func TestRegistryHooks_OnContextResetError(t *testing.T) {
+	r := NewRegistry()
+	p1 := &mockContextReset{mockPlugin: mockPlugin{name: "p1", caps: []Capability{CapContextReset}}, resetErr: errors.New("boom")}
+	p2 := &mockContextReset{mockPlugin: mockPlugin{name: "p2", caps: []Capability{CapContextReset}}}
+	require.NoError(t, r.Register(p1))
+	require.NoError(t, r.Register(p2))
+
+	h := NewRegistryHooks(r)
+	err := h.OnContextReset(context.Background(), "tape", "handoff")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "boom")
+	// p2 should not have been called because p1 returned an error.
+	assert.Equal(t, "", p2.resetTapeName)
 }
 
 type badToolProvider struct {
