@@ -65,6 +65,7 @@ func (a *Agent) countUserTurns(tapeName string) int {
 // (base prompt for tape + plugin fragments). Thread-safe: returns a new string, no shared state.
 func (a *Agent) resolveSystemPrompt(ctx context.Context, tapeName string) string {
 	base := a.systemPromptBaseForTape(tapeName)
+	ctx = ContextWithTapeName(ctx, tapeName)
 	return a.hooks.ComposeSystemPrompt(ctx, base)
 }
 
