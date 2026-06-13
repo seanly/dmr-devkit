@@ -136,40 +136,40 @@ func (s *SystemPromptValue) Resolve(baseDir string) (string, error) {
 
 // ModelConfig configures a single model endpoint.
 type ModelConfig struct {
-	Name             string  `toml:"name"`
-	Model            string  `toml:"model"`
-	APIKey           string  `toml:"api_key"`
-	APIBase          string  `toml:"api_base"`
-	Default          bool    `toml:"default"`
-	MaxToken         int     `toml:"max_token"` // context token budget for proactive handoff (vs usage.prompt_tokens); 0 = use agent default
-	HandoffThreshold float64 `toml:"handoff_threshold"`
+	Name             string  `toml:"name"             json:"name"`
+	Model            string  `toml:"model"            json:"model"`
+	APIKey           string  `toml:"api_key"          json:"api_key"`
+	APIBase          string  `toml:"api_base"         json:"api_base"`
+	Default          bool    `toml:"default"          json:"default"`
+	MaxToken         int     `toml:"max_token"        json:"max_token"` // context token budget for proactive handoff (vs usage.prompt_tokens); 0 = use agent default
+	HandoffThreshold float64 `toml:"handoff_threshold" json:"handoff_threshold"`
 	// CompletionMaxTokens is passed to the API as max completion tokens (OpenAI max_tokens / max_completion_tokens). 0 = omit (provider default).
-	CompletionMaxTokens int `toml:"completion_max_tokens"`
+	CompletionMaxTokens int `toml:"completion_max_tokens" json:"completion_max_tokens"`
 	// ToolResultMaxChars configures when a single tool result is externalized to disk
 	// before being sent back as role="tool" content:
 	//
 	//   - >0  : values longer than N runes trigger workspace persistence (+ preview tag)
 	//   - -1  : never externalize; send full output (risk: context overflow)
 	//   - 0   : unset; fall back to agent policy, model policy, auto-calc, then default (~50k)
-	ToolResultMaxChars int `toml:"tool_result_max_chars"`
+	ToolResultMaxChars int `toml:"tool_result_max_chars" json:"tool_result_max_chars"`
 	// TokenURL, ClientID, ClientSecret enable OAuth2 client_credentials against tokenURL
 	// (e.g. Keycloak .../protocol/openid-connect/token) for Authorization Bearer on each LLM request.
 	// Use with api_base pointing at an OpenAI-compatible proxy (e.g. LiteLLM). Implies api_key is optional.
-	TokenURL     string `toml:"token_url"`
-	ClientID     string `toml:"client_id"`
-	ClientSecret string `toml:"client_secret"`
+	TokenURL     string `toml:"token_url"     json:"token_url"`
+	ClientID     string `toml:"client_id"     json:"client_id"`
+	ClientSecret string `toml:"client_secret" json:"client_secret"`
 	// Headers are additional HTTP headers sent with every request (e.g., User-Agent, X-Client-Name).
-	Headers map[string]string `toml:"headers"`
+	Headers map[string]string `toml:"headers" json:"headers,omitempty"`
 	// HTTPResponseHeaderTimeout is seconds to wait for HTTP response headers after the request is sent.
 	// 0 = use default (10 minutes), suitable for slow LLM APIs.
-	HTTPResponseHeaderTimeout int `toml:"http_response_header_timeout"`
+	HTTPResponseHeaderTimeout int `toml:"http_response_header_timeout" json:"http_response_header_timeout"`
 	// HTTPClientTimeout is seconds for the entire HTTP request (headers + reading body).
 	// 0 = use default (15 minutes). If set shorter than http_response_header_timeout, the client raises it.
-	HTTPClientTimeout int `toml:"http_client_timeout"`
+	HTTPClientTimeout int `toml:"http_client_timeout" json:"http_client_timeout"`
 	// SupportsVision indicates this model supports multi-modal (image) input.
 	// When false, the system will not send image content parts to this model.
 	// Defaults to true (most modern models support vision).
-	VisionEnabled *bool `toml:"supports_vision"`
+	VisionEnabled *bool `toml:"supports_vision" json:"supports_vision,omitempty"`
 }
 
 // HTTPTimeouts returns optional per-model HTTP timeouts for the OpenAI-compatible client.
