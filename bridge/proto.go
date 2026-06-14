@@ -15,6 +15,7 @@ const (
 	TypeToolsUpdateAck = "tools_update_ack"
 	TypeCall           = "call"
 	TypeResult         = "result"
+	TypeResultChunk    = "result_chunk"
 	TypePing           = "ping"
 	TypePong           = "pong"
 	TypeError          = "error"
@@ -49,7 +50,8 @@ type Frame struct {
 	WorkerID  string            `json:"worker_id,omitempty"`
 	Hostname  string            `json:"hostname,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
-	Tools     []ToolDef         `json:"tools,omitempty"`
+	Executors []string          `json:"executors,omitempty"`
+	Tools     []ToolDef         `json:"tools,omitempty"` // deprecated: v1 worker catalog sync
 	Workspace string            `json:"workspace,omitempty"`
 	Rev       int64             `json:"rev,omitempty"`
 
@@ -70,6 +72,11 @@ type Frame struct {
 	ResultJSON string `json:"result_json,omitempty"`
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
+
+	// result_chunk (client → server) — streaming large payloads
+	ChunkIndex int    `json:"chunk_index,omitempty"`
+	ChunkTotal int    `json:"chunk_total,omitempty"`
+	ChunkData  string `json:"chunk_data,omitempty"`
 
 	// error (either direction)
 	Code    string `json:"code,omitempty"`

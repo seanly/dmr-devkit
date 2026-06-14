@@ -44,3 +44,13 @@ type ToolNotFoundError struct {
 func (e *ToolNotFoundError) Error() string {
 	return fmt.Sprintf("tool %q not found on worker", e.Tool)
 }
+
+// WorkerUnsupportedToolError is returned when a worker does not support a tool.
+type WorkerUnsupportedToolError struct {
+	WorkerID string
+	Tool     string
+}
+
+func (e *WorkerUnsupportedToolError) Error() string {
+	return fmt.Sprintf("worker %q does not support tool %q", e.WorkerID, e.Tool)
+}
