@@ -68,6 +68,7 @@ type Agent struct {
 	onToolCallMu      sync.RWMutex // protects config.OnToolCall
 	extendedTools     []*tool.Tool // cached extended tools from all plugins
 	extendedToolsOnce sync.Once    // ensure extended tools are loaded once
+	extendedToolsMu   sync.Mutex   // protects extendedToolsOnce reset
 
 	toolResults *toolresult.Manager // large tool-output externalization + microcompact state
 
@@ -540,13 +541,39 @@ func (a *Agent) DiscoverTool(tapeName, toolName string) {
 
 // GetAllExtendedTools returns all extended tools from plugins (cached).
 func (a *Agent) GetAllExtendedTools() []*tool.Tool {
-	a.extendedToolsOnce.Do(func() {
+	a.extendedToolsMu.Lock()
+	once := &a.extendedToolsOnce
+	a.extendedToolsMu.Unlock()
+
+	once.Do(func() {
+		a.extendedToolsMu.Lock()
 		a.extendedTools = a.hooks.CollectAllTools(context.Background(), false, true)
 		if a.config.Verbose >= 1 {
 			slog.Info("agent: loaded extended tools", "count", len(a.extendedTools))
 		}
+		a.extendedToolsMu.Unlock()
 	})
+
+	a.extendedToolsMu.Lock()
+	defer a.extendedToolsMu.Unlock()
 	return a.extendedTools
+}
+
+// InvalidateExtendedTools clears the extended-tool cache so the next discovery
+// reloads tools from plugins (e.g. after a local bridge worker connects).
+func (a *Agent) InvalidateExtendedTools() {
+	a.extendedToolsMu.Lock()
+	a.extendedToolsOnce = sync.Once{}
+	a.extendedTools = nil
+	a.extendedToolsMu.Unlock()
+
+	a.toolsCacheMu.Lock()
+	a.toolsCache = make(map[string][]*tool.Tool)
+	a.toolsCacheMu.Unlock()
+
+	if a.config.Verbose >= 1 {
+		slog.Info("agent: invalidated extended tools cache")
+	}
 }
 
 // SearchTools searches for extended tools matching the query.
