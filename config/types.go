@@ -285,6 +285,59 @@ type AgentConfig struct {
 	// SkillModels maps skill model route hints to actual model names.
 	// Example: "cheap" = "gpt-4o-mini", "reasoning" = "o3-mini"
 	SkillModels map[string]string `toml:"skill_models,omitempty"`
+	// Handoff configures structured task state and compact ordering.
+	Handoff HandoffConfig `toml:"handoff,omitempty"`
+	// Review configures post-tool adversarial review chains (critic skills).
+	Review ReviewConfig `toml:"review,omitempty"`
+	// Scaffolding selects harness profile (legacy|standard|minimal).
+	Scaffolding ScaffoldingConfig `toml:"scaffolding,omitempty"`
+}
+
+// HandoffConfig controls TaskState snapshots and compact ordering.
+type HandoffConfig struct {
+	StateEnabled      *bool  `toml:"state_enabled,omitempty"`
+	CompactAfterState bool   `toml:"compact_after_state"`
+	CompactRequired   bool   `toml:"compact_required"`
+	StateUpdate       string `toml:"state_update"` // heuristic | llm_extract
+	MaxArtifacts      int    `toml:"max_artifacts"`
+	MaxActiveFiles    int    `toml:"max_active_files"`
+}
+
+// StateEnabledOrDefault returns whether structured task state is on (default true).
+func (h HandoffConfig) StateEnabledOrDefault() bool {
+	if h.StateEnabled != nil {
+		return *h.StateEnabled
+	}
+	return true
+}
+
+// DefaultHandoffConfig returns harness defaults.
+func DefaultHandoffConfig() HandoffConfig {
+	enabled := true
+	return HandoffConfig{
+		StateEnabled:      &enabled,
+		CompactAfterState: true,
+		CompactRequired:   false,
+		StateUpdate:       "heuristic",
+		MaxArtifacts:      20,
+		MaxActiveFiles:    10,
+	}
+}
+
+// ReviewConfig configures automatic critic delegation after tools.
+type ReviewConfig struct {
+	Enabled              bool     `toml:"enabled"`
+	AfterTools           []string `toml:"after_tools"`
+	AfterToolPatterns    []string `toml:"after_tool_patterns"`
+	Chain                []string `toml:"chain"`
+	BlockOnCritical      bool     `toml:"block_on_critical"`
+	MaxChainDepth        int      `toml:"max_chain_depth"`
+	JudgeModel           string   `toml:"judge_model"`
+}
+
+// ScaffoldingConfig selects harness verbosity profile.
+type ScaffoldingConfig struct {
+	Profile string `toml:"profile"` // legacy | standard | minimal
 }
 
 // ResolveSystemPrompts resolves all file-based system prompts relative to baseDir.

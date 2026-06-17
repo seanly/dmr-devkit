@@ -39,7 +39,7 @@ func (cw *CompiledWorkflow) BindWithFactory(factory func(nodeID, tapeName string
 				return fmt.Errorf("graph missing placeholder for %s", nodeID)
 			}
 
-			tapeName := fmt.Sprintf("workflow/%s/%s", cw.Def.Name, nodeID)
+			tapeName := fmt.Sprintf("workflow/%s/default/%s", cw.Def.Name, nodeID)
 			baseNode := factory(nodeID, tapeName, a)
 
 			// Wrap with prompt template rendering.

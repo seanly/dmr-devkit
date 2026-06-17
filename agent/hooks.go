@@ -17,6 +17,7 @@ type Hooks interface {
 	OnContextReset(ctx context.Context, tapeName string, reason string) error
 	BeforeToolCall(ctx context.Context, t *tool.Tool, args map[string]any, toolCtx *tool.ToolContext) error
 	BatchBeforeToolCall(ctx context.Context, items []tool.BatchCheckItem) map[int]error
+	AfterToolRound(ctx context.Context, args AfterToolRoundArgs) error
 }
 
 type noopHooks struct{}
@@ -42,6 +43,8 @@ func (noopHooks) BeforeToolCall(context.Context, *tool.Tool, map[string]any, *to
 func (noopHooks) BatchBeforeToolCall(context.Context, []tool.BatchCheckItem) map[int]error {
 	return nil
 }
+
+func (noopHooks) AfterToolRound(context.Context, AfterToolRoundArgs) error { return nil }
 
 // NopHooks returns a [Hooks] implementation that does not extend the agent loop.
 func NopHooks() Hooks { return noopHooks{} }

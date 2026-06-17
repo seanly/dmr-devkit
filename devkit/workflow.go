@@ -2,6 +2,7 @@ package devkit
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"iter"
@@ -106,7 +107,7 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 			}, nil)
 		})
 
-		res, err := a.runInvocation(ctx, prompt)
+		res, err := a.runInvocation(ctx, wctx, prompt)
 
 		// Restore previous callbacks.
 		a.Kit.Agent.SetOnToolCall(nil)
@@ -159,7 +160,7 @@ func (a *AgentNode) Run(ctx context.Context, wctx *workflow.Context, input any) 
 		prompt = fmt.Sprintf("%v", input)
 	}
 
-	res, err := a.runInvocation(ctx, prompt)
+	res, err := a.runInvocation(ctx, wctx, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +169,8 @@ func (a *AgentNode) Run(ctx context.Context, wctx *workflow.Context, input any) 
 
 // runInvocation executes one agent turn with optional tool restriction, optional
 // per-step system prompt (via RunWithOpts/contextJSON), and optional model routing.
-func (a *AgentNode) runInvocation(ctx context.Context, prompt string) (*agent.Result, error) {
+func (a *AgentNode) runInvocation(ctx context.Context, wctx *workflow.Context, prompt string) (*agent.Result, error) {
+	tapeName := resolveWorkflowTape(a.TapeName, wctx)
 	var ctxJSON string
 	if s := strings.TrimSpace(a.SystemPrompt); s != "" {
 		payload := map[string]any{agent.ContextKeySystemPromptOverride: s}
@@ -179,11 +181,11 @@ func (a *AgentNode) runInvocation(ctx context.Context, prompt string) (*agent.Re
 		ctxJSON = string(b)
 	}
 	if m := strings.TrimSpace(a.Model); m != "" {
-		if err := a.Kit.Agent.SwitchModel(a.TapeName, m); err != nil {
+		if err := a.Kit.Agent.SwitchModel(tapeName, m); err != nil {
 			return nil, fmt.Errorf("devkit workflow node: SwitchModel(%q): %w", m, err)
 		}
 	}
-	return a.Kit.Agent.RunWithOptsAndTools(ctx, a.TapeName, prompt, 0, 0, a.AllowedTools, ctxJSON)
+	return a.Kit.Agent.RunWithOptsAndTools(ctx, tapeName, prompt, 0, 0, a.AllowedTools, ctxJSON)
 }
 
 // RunWorkflow executes a [workflow.Runner] (Sequential, Parallel, Graph, etc.)
@@ -193,6 +195,7 @@ func (a *AgentNode) runInvocation(ctx context.Context, prompt string) (*agent.Re
 // custom nodes can access tape, agent, and hooks via the Context.State/Metadata.
 func (k *Kit) RunWorkflow(ctx context.Context, runner workflow.Runner, input any) (*workflow.Result, error) {
 	wctx := workflow.NewContext()
+	wctx.Metadata["run_id"] = newWorkflowRunID()
 	wctx.Metadata["kit"] = k
 	wctx.Metadata["tape_manager"] = k.TapeManager
 	wctx.Metadata["agent"] = k.Agent
@@ -210,6 +213,7 @@ func (k *Kit) RunWorkflow(ctx context.Context, runner workflow.Runner, input any
 func (k *Kit) RunWorkflowStream(ctx context.Context, runner workflow.EventStream, input any) iter.Seq2[*workflow.Event, error] {
 	return func(yield func(*workflow.Event, error) bool) {
 		wctx := workflow.NewContext()
+		wctx.Metadata["run_id"] = newWorkflowRunID()
 		wctx.Metadata["kit"] = k
 		wctx.Metadata["tape_manager"] = k.TapeManager
 		wctx.Metadata["agent"] = k.Agent
@@ -245,4 +249,30 @@ func (k *Kit) AsAgentNodeWithTape(name, tapeName string) *AgentNode {
 		AgentName: name,
 		TapeName:  tapeName,
 	}
+}
+
+func newWorkflowRunID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", b)
+}
+
+// resolveWorkflowTape substitutes workflow/{name}/default/{node} → workflow/{name}/{runID}/{node}.
+func resolveWorkflowTape(base string, wctx *workflow.Context) string {
+	if wctx == nil || wctx.Metadata == nil {
+		return base
+	}
+	rid, _ := wctx.Metadata["run_id"].(string)
+	rid = strings.TrimSpace(rid)
+	if rid == "" {
+		return base
+	}
+	parts := strings.Split(base, "/")
+	if len(parts) >= 4 && parts[0] == "workflow" && parts[2] == "default" {
+		parts[2] = rid
+		return strings.Join(parts, "/")
+	}
+	return base + ":" + rid
 }

@@ -1,6 +1,7 @@
 package tape
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,31 @@ func TestBuildMessagesSkipsToolEntries(t *testing.T) {
 	msgs := ctx.BuildMessages(entries)
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message (only message kind), got %d", len(msgs))
+	}
+}
+
+func TestBuildMessagesInjectsLatestTaskState(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	payload := map[string]any{
+		"schema_version": 1,
+		"goal":           "Ship feature",
+		"source":         "handoff",
+		"updated_at":     "2026-06-17T10:00:00Z",
+	}
+	entries := []TapeEntry{
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+		NewTaskStateEntry(payload),
+		NewMessageEntry(map[string]any{"role": "assistant", "content": "ok"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 3 {
+		t.Fatalf("expected task_state system + 2 messages, got %d", len(msgs))
+	}
+	if msgs[0]["role"] != "system" {
+		t.Fatalf("first message role = %v", msgs[0]["role"])
+	}
+	content, _ := msgs[0]["content"].(string)
+	if !strings.Contains(content, "TaskState v1") || !strings.Contains(content, "Ship feature") {
+		t.Fatalf("task state block = %q", content)
 	}
 }

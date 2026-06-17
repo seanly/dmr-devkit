@@ -1,0 +1,74 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/seanly/dmr-devkit/client"
+	"github.com/seanly/dmr-devkit/handoff"
+	"github.com/seanly/dmr-devkit/tape"
+)
+
+func (a *Agent) usesLLMStateExtract() bool {
+	return a.handoffCfg().StateUpdate == "llm_extract"
+}
+
+func (a *Agent) updateTaskStateAfterToolRound(ctx context.Context, tapeName string, step int) {
+	if !a.taskStateEnabled() {
+		return
+	}
+	entries, err := a.fetchTapeEntries(tapeName)
+	if err != nil {
+		return
+	}
+	prev := handoff.LatestState(entries)
+	var s handoff.State
+	if a.usesLLMStateExtract() && a.defaultChat != nil {
+		extracted, extractErr := a.extractTaskStateLLM(ctx, prev, entries, step)
+		if extractErr != nil {
+			slog.Warn("task_state llm_extract failed, falling back to heuristic", "error", extractErr)
+			s = a.stateUpdater().UpdateFromToolRound(prev, entries, step, "heuristic")
+		} else {
+			s = extracted
+		}
+	} else {
+		s = a.stateUpdater().UpdateFromToolRound(prev, entries, step, "heuristic")
+	}
+	_ = a.appendTaskState(tapeName, s)
+}
+
+func (a *Agent) extractTaskStateLLM(ctx context.Context, prev *handoff.State, entries []tape.TapeEntry, step int) (handoff.State, error) {
+	base := a.stateUpdater().UpdateFromToolRound(prev, entries, step, "llm_extract")
+	prevJSON, _ := json.Marshal(prev)
+	prompt := fmt.Sprintf(`Previous TaskState:
+%s
+
+Recent tape activity:
+%s
+
+Extract updated TaskState v1 JSON.`,
+		string(prevJSON), handoff.FormatRecentEntries(entries, 15))
+
+	raw, err := a.defaultChat.Chat(ctx, client.ChatOpts{
+		Prompt:       prompt,
+		SystemPrompt: handoff.TaskStateExtractSystemPrompt(),
+		MaxTokens:    800,
+	})
+	if err != nil {
+		return base, err
+	}
+	out, err := handoff.ParseStateJSON(raw, base)
+	if err != nil {
+		return base, err
+	}
+	out.SchemaVersion = handoff.SchemaVersion
+	out.Source = "llm_extract"
+	out.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := out.Validate(); err != nil {
+		return base, err
+	}
+	return out, nil
+}

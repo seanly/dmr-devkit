@@ -179,3 +179,7 @@ func (h *RegistryHooks) BatchBeforeToolCall(ctx context.Context, items []tool.Ba
 	}
 	return nil
 }
+
+func (h *RegistryHooks) AfterToolRound(ctx context.Context, args agent.AfterToolRoundArgs) error {
+	return nil
+}

@@ -450,7 +450,11 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 		modelName = ""
 	}
 
-	output, err := ag.RunSubagentWithTools(subCtx, ctx.Tape, task, modelName, "temp", contextJSON, maxSteps, sk.ToolAllowlist, sk.Subagents)
+	subResult, err := ag.RunSubagentWithTools(subCtx, ctx.Tape, task, modelName, "temp", contextJSON, maxSteps, sk.ToolAllowlist, sk.Subagents)
+	output := ""
+	if subResult != nil {
+		output = subResult.Text
+	}
 
 	if sk.MaxResultChars > 0 {
 		runes := []rune(output)
@@ -462,6 +466,10 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}, nil
 	}
-	return map[string]any{"success": true, "output": output}, nil
+	out := map[string]any{"success": true, "output": output}
+	if subResult != nil && subResult.Packet != nil {
+		out["packet"] = subResult.Packet
+	}
+	return out, nil
 }
 

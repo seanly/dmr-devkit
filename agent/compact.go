@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/seanly/dmr-devkit/client"
+	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
 
@@ -22,11 +23,16 @@ func (a *Agent) CompactTapeWithName(ctx context.Context, tapeName, anchorName st
 func (a *Agent) compact(ctx context.Context, tapeName, anchorName string) (string, error) {
 	slog.Info("compact: starting summarization", "tape", tapeName)
 
-	// Clear discovered tools on compact/handoff
-	// This resets tool discovery state, requiring model to use toolSearch again
-	a.ClearDiscoveredTools(tapeName)
-	if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
-		slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
+	if a.clearToolsOnCompact() {
+		a.ClearDiscoveredTools(tapeName)
+		if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
+		}
+	}
+
+	if !a.llmCompactEnabled() {
+		slog.Info("compact: skipped LLM summary (minimal profile)")
+		return "", nil
 	}
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
@@ -44,6 +50,16 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName string) (strin
 		}
 		if c, ok := e.Payload["content"].(string); ok {
 			slog.Info("compact: summary generated", "chars", len(c), "summary", c)
+			if a.summaryJudgeEnabled() {
+				entries, _ := a.tape.Store.FetchAll(tapeName, nil)
+				st := handoff.LatestState(entries)
+				pass := validateCompactSummary(st, c)
+				judgePass := pass
+				a.recordCompactEvent(tapeName, true, len(c), &judgePass)
+				if !pass {
+					slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
+				}
+			}
 			return c, nil
 		}
 	}

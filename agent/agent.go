@@ -66,6 +66,7 @@ type Agent struct {
 	toolsCache   map[string][]*tool.Tool // per-tape tool list cache
 
 	onToolCallMu      sync.RWMutex // protects config.OnToolCall
+	reviewRunner       ReviewDelegate
 	extendedTools     []*tool.Tool // cached extended tools from all plugins
 	extendedToolsOnce sync.Once    // ensure extended tools are loaded once
 	extendedToolsMu   sync.Mutex   // protects extendedToolsOnce reset

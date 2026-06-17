@@ -102,6 +102,8 @@ func (testHooks) BatchBeforeToolCall(context.Context, []tool.BatchCheckItem) map
 	return nil
 }
 
+func (testHooks) AfterToolRound(context.Context, agent.AfterToolRoundArgs) error { return nil }
+
 func TestBuild_WithCustomHooks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

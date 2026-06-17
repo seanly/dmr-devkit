@@ -139,6 +139,16 @@ func NewCompactSummaryEntry(summary string) TapeEntry {
 	return newEntry("compact_summary", map[string]any{"content": summary})
 }
 
+// NewTaskStateEntry stores structured task state (HandoffState v1).
+func NewTaskStateEntry(payload map[string]any) TapeEntry {
+	return newEntry("task_state", payload, WithMeta(map[string]any{"schema_version": 1}))
+}
+
+// NewHandoffPacketEntry stores structured sub-agent return (HandoffPacket v1).
+func NewHandoffPacketEntry(payload map[string]any) TapeEntry {
+	return newEntry("handoff_packet", payload, WithMeta(map[string]any{"schema_version": 1}))
+}
+
 // ToolCallData holds structured data from a tool_call entry payload.
 type ToolCallData struct {
 	ID        string

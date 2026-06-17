@@ -128,6 +128,9 @@ func (m *Manager) BatchBeforeToolCall(context.Context, []tool.BatchCheckItem) ma
 	return nil
 }
 
+// AfterToolRound implements agent.Hooks.
+func (m *Manager) AfterToolRound(context.Context, agent.AfterToolRoundArgs) error { return nil }
+
 // --- tools ---
 
 func (m *Manager) allTools() []*tool.Tool {

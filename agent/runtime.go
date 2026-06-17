@@ -1,6 +1,10 @@
 package agent
 
-import "context"
+import (
+	"context"
+
+	"github.com/seanly/dmr-devkit/handoff"
+)
 
 // InterceptResult is returned by InterceptInput hook to short-circuit the agent loop.
 type InterceptResult struct {
@@ -31,6 +35,12 @@ type RunResult struct {
 	SwitchTape       string // non-empty: caller should switch to this tape for the next run
 }
 
+// SubagentResult is the outcome of a delegated sub-agent run (v2 handoff packet).
+type SubagentResult struct {
+	Text   string
+	Packet *handoff.Packet
+}
+
 // RuntimeAgent is the interface that plugins use to interact with the agent.
 // It lives in pkg/agent so the agent loop and embedders do not depend on pkg/plugin.
 type RuntimeAgent interface {
@@ -46,10 +56,10 @@ type RuntimeAgent interface {
 	SetOnToolCall(fn func(ToolCallEvent))
 
 	// Sub-agent execution (used by subagent plugin)
-	RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (string, error)
+	RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (*SubagentResult, error)
 
 	// Sub-agent execution with tool whitelist and subagent delegation allowlist.
-	RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (string, error)
+	RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (*SubagentResult, error)
 
 	// SetDefaultTape sets the canonical tape name for this session (used by CLI
 	// so that ,tape.switch commands resolve relative to a stable key).
@@ -66,6 +76,14 @@ type InterceptInputArgs struct {
 	RuntimeAgent RuntimeAgent
 	TapeControl  any // plugin.TapeControl — uses any to avoid import cycles in plugins
 	DefaultTape  string // canonical session tape; empty means same as TapeName
+}
+
+// AfterToolRoundArgs is emitted after a tool execution round completes.
+type AfterToolRoundArgs struct {
+	TapeName    string
+	Step        int
+	ToolNames   []string
+	ToolResults []any
 }
 
 // AfterAgentRunArgs holds typed arguments for AfterAgentRun hook handlers.

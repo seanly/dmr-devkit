@@ -31,21 +31,21 @@ func (m *mockRuntimeAgent) Run(context.Context, string, string, int32) (*agent.R
 	return nil, nil
 }
 func (m *mockRuntimeAgent) SetOnToolCall(func(agent.ToolCallEvent)) {}
-func (m *mockRuntimeAgent) RunSubagent(context.Context, string, string, string, string, string, int) (string, error) {
-	return "", nil
+func (m *mockRuntimeAgent) RunSubagent(context.Context, string, string, string, string, string, int) (*agent.SubagentResult, error) {
+	return nil, nil
 }
 func (m *mockRuntimeAgent) SetDefaultTape(string) {}
-func (m *mockRuntimeAgent) RunSubagentWithTools(_ context.Context, _, _, modelName, _, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (string, error) {
+func (m *mockRuntimeAgent) RunSubagentWithTools(_ context.Context, _, _, modelName, _, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (*agent.SubagentResult, error) {
 	m.lastModel = modelName
 	m.lastMaxSteps = maxSteps
 	m.lastAllowed = allowedTools
 	m.lastContextJSON = contextJSON
 	if m.index >= len(m.outputs) {
-		return "", fmt.Errorf("no more mock outputs")
+		return nil, fmt.Errorf("no more mock outputs")
 	}
 	out := m.outputs[m.index]
 	m.index++
-	return out, nil
+	return &agent.SubagentResult{Text: out}, nil
 }
 
 func TestHandleSkillDelegate(t *testing.T) {

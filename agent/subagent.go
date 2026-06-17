@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/seanly/dmr-devkit/core"
+	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
 
@@ -27,7 +28,7 @@ const subagentMaxDepth = 3
 // session: "temp" (default) scopes LLM context to entries after this job's anchor; "inherit" uses the full child tape.
 // contextJSON: optional JSON string injected as a system message on the child tape.
 // maxSteps: optional step cap (0 means fall back to subagentMaxSteps scaled by depth).
-func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (string, error) {
+func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int) (*SubagentResult, error) {
 	return a.RunSubagentWithTools(ctx, parentTape, prompt, modelName, session, contextJSON, maxSteps, nil, nil)
 }
 
@@ -35,14 +36,14 @@ func (a *Agent) RunSubagent(ctx context.Context, parentTape, prompt, modelName, 
 // allowedTools: nil means do not whitelist (usual tool discovery applies). Non-nil restricts to the
 // given names—an empty non-nil slice (e.g. from YAML []) removes all tools.
 // subagents: nil or empty means the sub-agent may not delegate to other skills.
-func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (string, error) {
+func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, modelName, session, contextJSON string, maxSteps int, allowedTools []string, subagents []string) (*SubagentResult, error) {
 	if strings.TrimSpace(prompt) == "" {
-		return "", core.NewError(core.ErrInvalidInput, "subagent: empty prompt", nil)
+		return nil, core.NewError(core.ErrInvalidInput, "subagent: empty prompt", nil)
 	}
 
 	depth := countSubagentDepth(parentTape)
 	if depth >= subagentMaxDepth {
-		return "", core.NewError(core.ErrDenied, fmt.Sprintf("subagent: max nesting depth %d reached", subagentMaxDepth), nil)
+		return nil, core.NewError(core.ErrDenied, fmt.Sprintf("subagent: max nesting depth %d reached", subagentMaxDepth), nil)
 	}
 
 	jobID := newSubagentJobID()
@@ -64,7 +65,7 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 	if strings.TrimSpace(contextJSON) != "" {
 		contextEntry := tape.NewSystemEntry(fmt.Sprintf("[Context from parent task]\n%s", contextJSON))
 		if err := a.tape.Store.Append(childTape, contextEntry); err != nil {
-			return "", core.NewError(core.ErrUnknown, "subagent: failed to append context", err)
+			return nil, core.NewError(core.ErrUnknown, "subagent: failed to append context", err)
 		}
 	}
 
@@ -90,7 +91,7 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 			if errors.As(err, &re) {
 				kind = re.Kind
 			}
-			return "", core.NewError(kind, "subagent: model switch failed", err)
+			return nil, core.NewError(kind, "subagent: model switch failed", err)
 		}
 	}
 
@@ -129,12 +130,32 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 
 	res, _, err := a.run(ctx, childTape, prompt, 0, mode, "")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if res == nil {
-		return "", nil
+		return &SubagentResult{}, nil
 	}
-	return res.Output, nil
+	childEntries, _ := a.tape.Store.FetchAll(childTape, nil)
+	taskState := handoff.LatestState(childEntries)
+	toolCalls := countToolCallsInTape(childEntries)
+	packet := handoff.NewPacketFromOutput(res.Output, taskState, res.Steps, toolCalls)
+	if packet != nil {
+		_ = a.tape.AppendEntry(childTape, tape.NewHandoffPacketEntry(packet.ToPayload()))
+	}
+	return &SubagentResult{Text: res.Output, Packet: packet}, nil
+}
+
+func countToolCallsInTape(entries []tape.TapeEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.Kind != "tool_call" {
+			continue
+		}
+		if calls, ok := tape.ExtractToolCalls(e.Payload); ok {
+			n += len(calls)
+		}
+	}
+	return n
 }
 
 func countSubagentDepth(tapeName string) int {

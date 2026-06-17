@@ -1,5 +1,10 @@
 package tape
 
+import (
+	"fmt"
+	"strings"
+)
+
 // AnchorSelector specifies which anchor to use for context windowing.
 type AnchorSelector int
 
@@ -42,6 +47,21 @@ func (tc *TapeContext) BuildMessages(entries []TapeEntry) []map[string]any {
 
 func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 	var messages []map[string]any
+	var taskStateBlock string
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == "task_state" {
+			if block, ok := formatTaskStateBlock(entries[i].Payload); ok {
+				taskStateBlock = block
+			}
+			break
+		}
+	}
+	if taskStateBlock != "" {
+		messages = append(messages, map[string]any{
+			"role":    "system",
+			"content": taskStateBlock,
+		})
+	}
 	for _, e := range entries {
 		switch e.Kind {
 		case "message":
@@ -61,11 +81,50 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 					"content": "[Context Summary]\n" + content,
 				})
 			}
-		case "content_replacement":
-			// audit-only entry; not sent to LLM
-			// anchor, event, error, exec_start, exec_input, exec_output,
-			// exec_state, fork entries are not sent to LLM
+		case "task_state", "handoff_packet", "content_replacement":
+			// task_state injected above (latest only); handoff_packet audit-only
+			// anchor, event, error, exec_* , fork entries are not sent to LLM
 		}
 	}
 	return messages
+}
+
+// formatTaskStateBlock renders task_state payload for LLM injection.
+func formatTaskStateBlock(payload map[string]any) (string, bool) {
+	// Avoid import cycle with handoff package — duplicate minimal formatting via JSON round-trip.
+	content, ok := payload["goal"].(string)
+	if !ok || content == "" {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString("[TaskState v1]\n")
+	b.WriteString("goal: ")
+	b.WriteString(content)
+	b.WriteByte('\n')
+	if constraints, ok := payload["constraints"].(map[string]any); ok {
+		b.WriteString("constraints:\n")
+		for k, v := range constraints {
+			b.WriteString("  ")
+			b.WriteString(k)
+			b.WriteString(": ")
+			b.WriteString(fmt.Sprint(v))
+			b.WriteByte('\n')
+		}
+	}
+	if la, ok := payload["last_action"].(string); ok && la != "" {
+		b.WriteString("last_action: ")
+		b.WriteString(la)
+		b.WriteByte('\n')
+	}
+	if af, ok := payload["active_files"].([]any); ok && len(af) > 0 {
+		b.WriteString("active_files: ")
+		for i, x := range af {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprint(x))
+		}
+		b.WriteByte('\n')
+	}
+	return b.String(), true
 }

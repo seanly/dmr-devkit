@@ -228,6 +228,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(userPayload)); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
+	a.initTaskStateFromPrompt(tapeName, prompt)
 
 	lastPromptTokens := 0
 	lastCompletionTokens := 0
@@ -254,6 +255,11 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				tapeCtx = tape.NewLastAnchorContext()
 			}
 		}
+		tokensEst := 0
+		if histAfter <= 0 {
+			tokensEst = a.estimateContextTokens(tapeName, tapeCtx)
+		}
+		a.recordStepStart(tapeName, execID, step, tokensEst, len(tools))
 		opts := client.ChatOpts{
 			Prompt:              currentPrompt,
 			SystemPrompt:        systemPrompt,
@@ -274,17 +280,15 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 
 		// Pre-check: Estimate tokens before calling API to avoid wasting a call
 		// if context is likely to overflow. This is a best-effort optimization.
-		if histAfter <= 0 {
+		if histAfter <= 0 && a.preemptiveCompactEnabled() {
 			estimatedTokens := a.estimateContextTokens(tapeName, tapeCtx)
 			if estimatedTokens > 0 && a.shouldAutoHandoffByEstimate(tapeName, estimatedTokens) {
 				slog.Info("compact: preemptive trigger", "estimated_tokens", estimatedTokens)
 
 				if a.shouldCompactNow(tapeName, step) {
 					handoffName := fmt.Sprintf("auto:preemptive:%s", time.Now().UTC().Format("20060102-150405"))
-					if err := a.CompactTapeWithName(ctx, tapeName, handoffName); err != nil {
-						slog.Error("compact: preemptive compact failed; continuing anyway", "error", err)
-					} else {
-						slog.Info("compact: preemptive compact succeeded", "anchor", handoffName)
+					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "preemptive", step); ok || a.taskStateEnabled() {
+						slog.Info("compact: preemptive handoff done", "anchor", handoffName)
 						a.recordCompactStep(tapeName, step)
 
 						// Rebuild system prompt and continue with structured prompt
@@ -360,6 +364,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "ok"})); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
 			}
+			a.recordRunEnd(tapeName, step, toolIterations, lastPromptTokens)
 			return &Result{
 				Output:           result.Text,
 				Steps:            step,
@@ -477,6 +482,34 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				ToolResults: result.ToolResults,
 			})
 
+			toolNames := make([]string, 0, len(result.ToolCalls))
+			denyCount := 0
+			for i, tr := range result.ToolResults {
+				if i < len(result.ToolCalls) {
+					toolNames = append(toolNames, result.ToolCalls[i].Function.Name)
+				}
+				if m, ok := tr.(map[string]any); ok {
+					if kind, _ := m["kind"].(string); kind == "denied" {
+						denyCount++
+					}
+				}
+			}
+			a.recordToolRound(tapeName, step, toolNames, denyCount)
+			a.updateTaskStateAfterToolRound(ctx, tapeName, step)
+			review := a.runPostToolReview(ctx, tapeName, step, toolNames, result.ToolResults)
+			if review.Feedback != "" {
+				_ = a.tape.AppendEntry(tapeName, tape.NewSystemEntry(review.Feedback))
+			}
+			if review.HardStop {
+				currentPrompt = "Address the review feedback above before taking further action. Do not repeat the blocked approach."
+				if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{
+					"role": "user", "content": currentPrompt,
+				})); err != nil {
+					slog.Warn("tape append failed", "tape", tapeName, "error", err)
+				}
+				continue
+			}
+
 			// Check if all tool calls in this round were denied
 			allDenied := len(result.ToolResults) > 0
 			hasMeaningfulComment := false
@@ -575,14 +608,10 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					slog.Info("compact: triggered", "prompt_tokens", pt, "limit", limit, "threshold", threshold, "effective_limit", int(float64(limit)*threshold))
 
 					handoffName := fmt.Sprintf("auto:token-threshold:%s", time.Now().UTC().Format("20060102-150405"))
-					if err := a.CompactTapeWithName(ctx, tapeName, handoffName); err != nil {
-						slog.Error("compact: failed; using anchor-only handoff", "error", err)
-						a.Handoff(tapeName, handoffName, map[string]any{
-							"reason":        "token_threshold",
-							"compact_error": err.Error(),
-						})
+					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "proactive", step); ok || a.taskStateEnabled() {
+						slog.Info("compact: proactive handoff done", "anchor", handoffName)
 					} else {
-						slog.Info("compact: succeeded", "anchor", handoffName)
+						slog.Error("compact: proactive handoff failed")
 					}
 
 					a.recordCompactStep(tapeName, step)
