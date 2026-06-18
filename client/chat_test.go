@@ -745,3 +745,39 @@ func TestStreamStripsThinkTags(t *testing.T) {
 		t.Errorf("text = %q, want %q", text, "visible reply")
 	}
 }
+
+func TestPrepareStripImageParts(t *testing.T) {
+	fake := &fakeClient{completionQueue: []any{resp("ok")}}
+	cc := newTestChatClient(fake)
+
+	_, err := cc.Chat(context.Background(), ChatOpts{
+		Prompt: "follow up",
+		Messages: []map[string]any{
+			{
+				"role":    "user",
+				"content": "what is this?",
+				"parts": []any{
+					map[string]any{"type": "text", "text": "what is this?"},
+					map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,abc"}},
+				},
+			},
+		},
+		StripImageParts: true,
+		PromptParts: []provider.ContentPart{
+			provider.ImagePart{URL: "data:image/png;base64,xyz"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(fake.calls))
+	}
+	for _, m := range fake.calls[0].Messages {
+		for _, p := range m.Parts {
+			if _, ok := p.(provider.ImagePart); ok {
+				t.Fatalf("image part leaked to provider: %#v", m)
+			}
+		}
+	}
+}

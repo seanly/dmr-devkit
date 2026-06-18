@@ -41,10 +41,13 @@ type ChatOpts struct {
 	ExtraHeaders        map[string]string
 	// ToolResultManager, when set with Tape, runs merge + microcompact on tape-loaded history before each request.
 	ToolResultManager *toolresult.Manager
-		// PromptParts carries multi-modal content (images) alongside Prompt.
-		// When non-empty, builds a multi-part (image_url + text) message.
-		PromptParts []provider.ContentPart
-	}
+	// PromptParts carries multi-modal content (images) alongside Prompt.
+	// When non-empty, builds a multi-part (image_url + text) message.
+	PromptParts []provider.ContentPart
+	// StripImageParts removes image_url parts from tape history and PromptParts before
+	// the LLM request (tape on disk is unchanged). Set when the target model does not support vision.
+	StripImageParts bool
+}
 
 // StreamState holds the accumulated state from a streaming response.
 type StreamState struct {
@@ -476,17 +479,24 @@ func (c *ChatClient) prepare(opts ChatOpts) (*preparedChat, error) {
 
 		// Add current prompt (with optional multi-modal parts)
 		if opts.Prompt != "" {
+			promptParts := opts.PromptParts
+			if opts.StripImageParts {
+				promptParts = provider.StripImageContentParts(promptParts)
+			}
 			msg := map[string]any{"role": "user", "content": opts.Prompt}
-			if len(opts.PromptParts) > 0 {
-				parts := make([]any, 0, len(opts.PromptParts)+1)
+			if len(promptParts) > 0 {
+				parts := make([]any, 0, len(promptParts)+1)
 				parts = append(parts, map[string]any{"type": "text", "text": opts.Prompt})
-				for _, p := range opts.PromptParts {
+				for _, p := range promptParts {
 					parts = append(parts, provider.ContentPartToMap(p))
 				}
 				msg["parts"] = parts
 			}
 			msgs = append(msgs, msg)
 		}
+	}
+	if opts.StripImageParts {
+		msgs = provider.StripImagePartsFromMessages(msgs)
 	}
 	p.messages = collapseSystemMessages(msgs)
 

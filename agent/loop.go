@@ -271,6 +271,9 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			MaxTokens:           a.completionMaxTokensForTape(tapeName),
 			ToolResultManager:   a.toolResults,
 		}
+		if model := a.GetCurrentModel(tapeName); model != nil && !model.SupportsVision() {
+			opts.StripImageParts = true
+		}
 		if mode != nil && len(mode.promptParts) > 0 {
 			opts.PromptParts = mode.promptParts
 		}

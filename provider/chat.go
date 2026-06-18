@@ -63,6 +63,74 @@ func ContentPartToMap(p ContentPart) map[string]any {
 	return nil
 }
 
+// imageOmittedPlaceholder is injected when a message had only image parts and the
+// current model does not support vision (wire payload only; tape is unchanged).
+const imageOmittedPlaceholder = "[Image omitted: current model does not support vision]"
+
+// StripImagePartsFromMessages returns a copy of messages with image_url parts removed.
+// Used when sending tape history to text-only models after a model switch.
+func StripImagePartsFromMessages(messages []map[string]any) []map[string]any {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]map[string]any, 0, len(messages))
+	for _, m := range messages {
+		rawParts, ok := m["parts"].([]any)
+		if !ok || len(rawParts) == 0 {
+			out = append(out, m)
+			continue
+		}
+		filtered := make([]any, 0, len(rawParts))
+		hadImage := false
+		for _, rp := range rawParts {
+			pm, ok := rp.(map[string]any)
+			if !ok {
+				filtered = append(filtered, rp)
+				continue
+			}
+			if typ, _ := pm["type"].(string); typ == "image_url" {
+				hadImage = true
+				continue
+			}
+			filtered = append(filtered, rp)
+		}
+		if !hadImage {
+			out = append(out, m)
+			continue
+		}
+		nm := make(map[string]any, len(m))
+		for k, v := range m {
+			nm[k] = v
+		}
+		if len(filtered) > 0 {
+			nm["parts"] = filtered
+		} else {
+			delete(nm, "parts")
+			content, _ := nm["content"].(string)
+			if content == "" {
+				nm["content"] = imageOmittedPlaceholder
+			}
+		}
+		out = append(out, nm)
+	}
+	return out
+}
+
+// StripImageContentParts removes image parts from a ContentPart slice.
+func StripImageContentParts(parts []ContentPart) []ContentPart {
+	if len(parts) == 0 {
+		return parts
+	}
+	out := make([]ContentPart, 0, len(parts))
+	for _, p := range parts {
+		if _, ok := p.(ImagePart); ok {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // Message represents a chat message.
 type Message struct {
 	Role             string        `json:"role"`
