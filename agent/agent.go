@@ -540,6 +540,11 @@ func (a *Agent) DiscoverTool(tapeName, toolName string) {
 	}
 }
 
+// GetAllCoreTools returns all core tools from plugins (cached).
+func (a *Agent) GetAllCoreTools() []*tool.Tool {
+	return a.hooks.CollectAllTools(context.Background(), true, false)
+}
+
 // GetAllExtendedTools returns all extended tools from plugins (cached).
 func (a *Agent) GetAllExtendedTools() []*tool.Tool {
 	a.extendedToolsMu.Lock()

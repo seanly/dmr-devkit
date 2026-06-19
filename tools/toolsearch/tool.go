@@ -12,6 +12,7 @@ import (
 // Discovery provides the methods needed by toolSearch to query and mutate
 type Discovery interface {
 	GetAllExtendedTools() []*tool.Tool
+	GetAllCoreTools() []*tool.Tool
 	DiscoverTool(tapeName, toolName string)
 	IsToolDiscovered(tapeName, toolName string) bool
 }
@@ -96,13 +97,28 @@ func handleToolSearch(d Discovery, ctx *tool.ToolContext, args map[string]any) (
 
 func handleSelect(d Discovery, query string, tapeName string, extendedTools []*tool.Tool) (string, error) {
 	requested := strings.Split(strings.ToLower(query), ",")
-	var found, missing []string
+	var found, missing, coreRequested []string
+
+	coreTools := d.GetAllCoreTools()
+	coreByName := make(map[string]*tool.Tool, len(coreTools))
+	for _, t := range coreTools {
+		if t != nil {
+			coreByName[strings.ToLower(t.Spec.Name)] = t
+		}
+	}
 
 	for _, name := range requested {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
+
+		// Core tools are always loaded; do not discover them via toolSearch.
+		if _, isCore := coreByName[name]; isCore {
+			coreRequested = append(coreRequested, name)
+			continue
+		}
+
 		var matched *tool.Tool
 		for _, t := range extendedTools {
 			if strings.ToLower(t.Spec.Name) == name {
@@ -128,6 +144,12 @@ func handleSelect(d Discovery, query string, tapeName string, extendedTools []*t
 			sb.WriteString(fmt.Sprintf("- %s\n", name))
 		}
 		sb.WriteString("\nThese tools are now available for use.")
+	}
+	if len(coreRequested) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(fmt.Sprintf("The following %d tool(s) are core tools and are already loaded. Use them directly: %s", len(coreRequested), strings.Join(coreRequested, ", ")))
 	}
 	if len(missing) > 0 {
 		if sb.Len() > 0 {

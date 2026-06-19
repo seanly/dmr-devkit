@@ -98,9 +98,9 @@ When a conclusion or next step depends on **whether** something is true in the r
 ## When to Use toolSearch
 
 Use `toolSearch` ONLY when:
-- You need functionality not yet in your loaded tool set
-- You are about to improvise with shell or another generic tool and a specialized tool might exist
-- The user asks for capabilities that are likely deferred (web search, external APIs, etc.)
+- You need functionality not yet in your loaded tool set (e.g. web search, external APIs, messaging, MCP integrations)
+
+**NEVER use `toolSearch` for core tools.** Core tools (such as `shell`, `fs`, `tape`, etc.) are always loaded and available. If a core tool exists for the task, use it directly without searching.
 
 **Do NOT search repeatedly with similar keywords.** If the first search returns no results, use loaded tools or ask the user. Prefer a **small number** of distinct `toolSearch` calls per task; avoid repeating the same query. There is **no hard runtime cap** on calls. If you already know an extended tool name, use `select:ToolName` (comma-separated for multiple) to load it directly.
 

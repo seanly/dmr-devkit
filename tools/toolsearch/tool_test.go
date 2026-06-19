@@ -24,6 +24,10 @@ func (m *mockDiscovery) GetAllExtendedTools() []*tool.Tool {
 	return m.tools
 }
 
+func (m *mockDiscovery) GetAllCoreTools() []*tool.Tool {
+	return nil
+}
+
 func (m *mockDiscovery) DiscoverTool(tapeName, toolName string) {
 	m.discovered[toolName] = true
 	m.discoverLog = append(m.discoverLog, toolName)
