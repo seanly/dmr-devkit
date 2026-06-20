@@ -8,9 +8,11 @@ import (
 
 // InterceptResult is returned by InterceptInput hook to short-circuit the agent loop.
 type InterceptResult struct {
-	Output     string // command output text
-	Kind       string // "command" for renderer styling
-	SwitchTape string // non-empty: caller should switch to this tape for the next run
+	Output      string // command output text
+	Kind        string // "command" for renderer styling
+	SwitchTape  string // non-empty: caller should switch to this tape for the next run
+	Quit        bool   // true: caller should exit the session
+	ClearScreen bool   // true: caller should clear the screen
 }
 
 // ModelInfo describes a configured model.
@@ -33,6 +35,8 @@ type RunResult struct {
 	PromptTokens     int
 	CompletionTokens int
 	SwitchTape       string // non-empty: caller should switch to this tape for the next run
+	Quit             bool   // true: caller should exit the session
+	ClearScreen      bool   // true: caller should clear the screen
 }
 
 // SubagentResult is the outcome of a delegated sub-agent run (v2 handoff packet).

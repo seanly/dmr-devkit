@@ -136,7 +136,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		})); err != nil {
 			slog.Warn("tape append failed", "tape", tapeName, "error", err)
 		}
-		return &Result{Output: ir.Output, Steps: 0, SwitchTape: ir.SwitchTape}, 0, nil
+		return &Result{Output: ir.Output, Steps: 0, SwitchTape: ir.SwitchTape, Quit: ir.Quit, ClearScreen: ir.ClearScreen}, 0, nil
 	}
 
 	// Collect tools from plugins (with discovery support)
