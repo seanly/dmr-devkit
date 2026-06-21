@@ -3,9 +3,11 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -97,6 +99,46 @@ type SystemPromptValue struct {
 	Files []string // file path list
 }
 
+// UnmarshalTOML implements the go-toml/v2 Unmarshaler interface.
+// Accepts either a string or an array of strings (file paths).
+func (s *SystemPromptValue) UnmarshalTOML(fn func(any) error) error {
+	var raw any
+	if err := fn(&raw); err != nil {
+		return err
+	}
+	switch val := raw.(type) {
+	case string:
+		s.Raw = val
+		s.Files = nil
+	case []interface{}:
+		s.Files = make([]string, 0, len(val))
+		for _, item := range val {
+			if str, ok := item.(string); ok {
+				s.Files = append(s.Files, str)
+			}
+		}
+		s.Raw = ""
+	}
+	return nil
+}
+
+// MarshalTOML implements the go-toml/v2 Marshaler interface.
+func (s SystemPromptValue) MarshalTOML() ([]byte, error) {
+	if len(s.Files) > 0 {
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		for i, f := range s.Files {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(strconv.Quote(f))
+		}
+		buf.WriteByte(']')
+		return buf.Bytes(), nil
+	}
+	return []byte(strconv.Quote(s.Raw)), nil
+}
+
 // UnmarshalText implements encoding.TextUnmarshaler for single string values.
 func (s *SystemPromptValue) UnmarshalText(text []byte) error {
 	s.Raw = string(text)
@@ -106,10 +148,6 @@ func (s *SystemPromptValue) UnmarshalText(text []byte) error {
 
 // MarshalText implements encoding.TextMarshaler for single string values.
 func (s SystemPromptValue) MarshalText() ([]byte, error) {
-	if len(s.Files) > 0 {
-		// Cannot marshal array as text, will be handled by TOML encoder
-		return nil, fmt.Errorf("cannot marshal array as text")
-	}
 	return []byte(s.Raw), nil
 }
 
@@ -132,6 +170,13 @@ func (s *SystemPromptValue) Resolve(baseDir string) (string, error) {
 		parts = append(parts, strings.TrimSpace(string(data)))
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// SystemPromptEntry defines a single per-tape system prompt configuration.
+type SystemPromptEntry struct {
+	Tape         string           `toml:"tape" json:"tape"`
+	Profile      string           `toml:"profile,omitempty" json:"profile,omitempty"`
+	SystemPrompt SystemPromptValue `toml:"system_prompt,omitempty" json:"system_prompt,omitempty"`
 }
 
 // ModelConfig configures a single model endpoint.
@@ -272,13 +317,10 @@ type AgentConfig struct {
 	// ToolResultPolicy configures persisting large tool outputs and microcompaction.
 	ToolResultPolicy ToolResultPolicyConfig `toml:"tool_result_policy,omitempty"`
 	// SystemPrompt can be either a string or array of strings (file paths)
-	// Use interface{} to allow both types, then convert in post-processing
-	SystemPromptRaw interface{}       `toml:"system_prompt,omitempty"`
-	SystemPrompt    SystemPromptValue `toml:"-"`
-	// SystemPrompts maps tape name glob patterns to per-tape system prompts.
-	// Each value can be a string or array of file paths (same as SystemPrompt).
-	SystemPromptsRaw map[string]interface{}       `toml:"system_prompts,omitempty"`
-	SystemPrompts    map[string]SystemPromptValue `toml:"-"`
+	SystemPrompt SystemPromptValue `toml:"system_prompt,omitempty"`
+	// SystemPrompts is a list of per-tape system prompt entries.
+	// Each entry has a tape glob, optional profile, and optional system_prompt.
+	SystemPrompts []SystemPromptEntry `toml:"system_prompts,omitempty"`
 	// TapeModels maps tape name glob patterns to model names for per-tape model selection.
 	// Example: "feishu_bot_ops:*" = "gpt-4o-mini"
 	TapeModels map[string]string `toml:"models,omitempty"`
@@ -344,12 +386,12 @@ type ScaffoldingConfig struct {
 // Returns a map of glob pattern → resolved prompt string.
 func (a *AgentConfig) ResolveSystemPrompts(baseDir string) (map[string]string, error) {
 	result := make(map[string]string)
-	for pattern, spv := range a.SystemPrompts {
-		resolved, err := spv.Resolve(baseDir)
+	for _, entry := range a.SystemPrompts {
+		resolved, err := entry.SystemPrompt.Resolve(baseDir)
 		if err != nil {
-			return nil, fmt.Errorf("resolve system_prompts[%q]: %w", pattern, err)
+			return nil, fmt.Errorf("resolve system_prompts[%q]: %w", entry.Tape, err)
 		}
-		result[pattern] = resolved
+		result[entry.Tape] = resolved
 	}
 	return result, nil
 }
