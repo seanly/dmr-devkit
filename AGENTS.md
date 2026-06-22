@@ -164,7 +164,9 @@ res, _ := kit.Agent.Run(ctx, "default", "Hello", 0)
 | `workflow` | `Sequential`, `Parallel`, `Graph` | Orchestrate multi-step tasks |
 | `tool` | `Tool{Spec, Handler}` | Define callable tools |
 | `tape` | `TapeManager`, `TapeStore` | Store conversation history |
-| `a2aserver` | `Register(mux, opts)` | Expose HTTP service |
+| `a2aserver` | `Mount(mux, opts, runner)` | Expose A2A HTTP service |
+
+Filesystem-first agent authoring (`agent/` layout, SO tools, webhook channels) lives in the sibling project **[dmr-forge](../dmr-forge)** — use `forge run`, `forge serve`, `forge info`.
 
 ### Example Code Locations
 
