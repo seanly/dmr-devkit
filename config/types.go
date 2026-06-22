@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // FTS5Mode represents the SQLite FTS5 enable mode: true, false, or "auto".
@@ -99,26 +101,17 @@ type SystemPromptValue struct {
 	Files []string // file path list
 }
 
-// UnmarshalTOML implements the go-toml/v2 Unmarshaler interface.
-// Accepts either a string or an array of strings (file paths).
-func (s *SystemPromptValue) UnmarshalTOML(fn func(any) error) error {
-	var raw any
-	if err := fn(&raw); err != nil {
-		return err
+// UnmarshalTOML implements unstable.Unmarshaler (go-toml/v2) for direct string values.
+// File path arrays are handled by [UnmarshalDocument] during config load.
+func (s *SystemPromptValue) UnmarshalTOML(data []byte) error {
+	var wrapper struct {
+		V string `toml:"v"`
 	}
-	switch val := raw.(type) {
-	case string:
-		s.Raw = val
-		s.Files = nil
-	case []interface{}:
-		s.Files = make([]string, 0, len(val))
-		for _, item := range val {
-			if str, ok := item.(string); ok {
-				s.Files = append(s.Files, str)
-			}
-		}
-		s.Raw = ""
+	if err := toml.Unmarshal(append([]byte("v = "), data...), &wrapper); err != nil {
+		return fmt.Errorf("system_prompt: %w", err)
 	}
+	s.Raw = wrapper.V
+	s.Files = nil
 	return nil
 }
 

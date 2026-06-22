@@ -6,6 +6,7 @@ require (
 	github.com/a2aproject/a2a-go/v2 v2.2.1
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/mark3labs/mcp-go v0.54.0
+	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.43.0
