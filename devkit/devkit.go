@@ -65,6 +65,11 @@ type Options struct {
 	// Defaults to "default" when empty.
 	ModelName string
 
+	// Models, when non-empty, registers multiple model endpoints on the agent.
+	// The first entry with Default=true, or the first entry overall, is the primary LLM.
+	// When set, Model/APIKey/APIBase are ignored for Build unless Models is empty.
+	Models []config.ModelConfig
+
 	Verbose int
 
 	// Workspace is passed through to [agent.Config] and, when non-empty, to tape file
@@ -126,20 +131,69 @@ func (o *Options) modelConfig() config.ModelConfig {
 	return m
 }
 
+func (o *Options) resolvedModels() []config.ModelConfig {
+	if len(o.Models) > 0 {
+		out := make([]config.ModelConfig, len(o.Models))
+		copy(out, o.Models)
+		hasDefault := false
+		for i := range out {
+			if out[i].Default {
+				hasDefault = true
+				break
+			}
+		}
+		if !hasDefault {
+			out[0].Default = true
+		}
+		for i := range out {
+			if out[i].Name == "" {
+				out[i].Name = out[i].Model
+			}
+			if out[i].Name == "" {
+				out[i].Name = fmt.Sprintf("model%d", i)
+			}
+		}
+		return out
+	}
+	return []config.ModelConfig{o.modelConfig()}
+}
+
 func (o *Options) validate() error {
+	if len(o.Models) > 0 {
+		for i := range o.Models {
+			if err := validateModelConfig(&o.Models[i]); err != nil {
+				return fmt.Errorf("devkit: models[%d]: %w", i, err)
+			}
+		}
+		return nil
+	}
 	if o.Model == "" {
 		return fmt.Errorf("devkit: Model is required")
 	}
+	return validateModelConfig(&config.ModelConfig{
+		Model:        o.Model,
+		APIKey:       o.APIKey,
+		APIBase:      o.APIBase,
+		TokenURL:     o.TokenURL,
+		ClientID:     o.ClientID,
+		ClientSecret: o.ClientSecret,
+	})
+}
+
+func validateModelConfig(m *config.ModelConfig) error {
+	if m == nil || m.Model == "" {
+		return fmt.Errorf("model is required")
+	}
 	switch {
-	case o.TokenURL != "" || o.ClientID != "" || o.ClientSecret != "":
-		if o.TokenURL == "" || o.ClientID == "" || o.ClientSecret == "" {
-			return fmt.Errorf("devkit: token_url, client_id, and client_secret must all be set for OAuth")
+	case m.TokenURL != "" || m.ClientID != "" || m.ClientSecret != "":
+		if m.TokenURL == "" || m.ClientID == "" || m.ClientSecret == "" {
+			return fmt.Errorf("token_url, client_id, and client_secret must all be set for OAuth")
 		}
-		if o.APIBase == "" {
-			return fmt.Errorf("devkit: APIBase is required when using OAuth client_credentials")
+		if m.APIBase == "" {
+			return fmt.Errorf("api_base is required when using OAuth client_credentials")
 		}
-	case o.APIKey == "":
-		return fmt.Errorf("devkit: APIKey is required, or set token_url, client_id, and client_secret")
+	case m.APIKey == "":
+		return fmt.Errorf("api_key is required, or set token_url, client_id, and client_secret")
 	default:
 	}
 	return nil
@@ -194,7 +248,8 @@ func Build(ctx context.Context, opts Options) (*Kit, error) {
 		hooks = agent.NopHooks()
 	}
 
-	mc := opts.modelConfig()
+	models := opts.resolvedModels()
+	mc := models[0]
 	httpHdr, httpClient := mc.HTTPTimeouts()
 	llmCore := core.NewLLMCore(core.LLMCoreConfig{
 		Model:                     mc.Model,
@@ -239,7 +294,7 @@ func Build(ctx context.Context, opts Options) (*Kit, error) {
 		Tools:            opts.Tools,
 		Workspace:        opts.Workspace,
 		Verbose:          opts.Verbose,
-		Models:           []config.ModelConfig{mc},
+		Models:           models,
 	}
 
 	ag := agent.New(chat, tm, hooks, agCfg)
