@@ -31,15 +31,31 @@ type SQLiteTapeStore struct {
 	migrationCompleted atomic.Bool
 }
 
-// NewSQLiteTapeStore opens (or creates) a SQLite database at dbPath.
+// SQLDriverModernc is the default pure-Go SQLite driver (modernc.org/sqlite).
+const SQLDriverModernc = "sqlite"
+
+// NewSQLiteTapeStore opens (or creates) a SQLite database at dbPath using the modernc driver.
 func NewSQLiteTapeStore(dbPath string, config SQLiteStoreConfig) (*SQLiteTapeStore, error) {
+	return NewSQLiteTapeStoreWithDriver(dbPath, SQLDriverModernc, config)
+}
+
+// NewSQLiteTapeStoreWithDriver opens a tape store with the given database/sql driver name.
+// Used by sqlcompat evaluation (e.g. driver "turso" via tursogo). For modernc, WAL query params are applied.
+func NewSQLiteTapeStoreWithDriver(dbPath, driver string, config SQLiteStoreConfig) (*SQLiteTapeStore, error) {
+	if driver == "" {
+		driver = SQLDriverModernc
+	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	dsn := dbPath
+	if driver == SQLDriverModernc {
+		dsn = dbPath + "?_journal_mode=WAL&_busy_timeout=5000"
+	}
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}
 
 	store := &SQLiteTapeStore{
@@ -651,6 +667,11 @@ func (s *SQLiteTapeStore) RebuildFTS() error {
 // Close closes the database connection.
 func (s *SQLiteTapeStore) Close() {
 	s.db.Close()
+}
+
+// DB returns the underlying database handle (for sqlcompat evaluation and tests).
+func (s *SQLiteTapeStore) DB() *sql.DB {
+	return s.db
 }
 
 // applyPostFilters applies text query and kind filter for entries already sliced by anchor.
