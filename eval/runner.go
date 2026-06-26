@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,14 @@ func RunBaselineFixtures(dir string) (passed, total int, cards []*ScoreCard, err
 	return passed, total, cards, nil
 }
 
+// BaselineReport is a structured representation of a baseline run.
+type BaselineReport struct {
+	Passed  int          `json:"passed"`
+	Total   int          `json:"total"`
+	PassRate float64     `json:"pass_rate"`
+	Cards   []*ScoreCard `json:"cards"`
+}
+
 // FormatBaselineReport summarizes baseline fixture results.
 func FormatBaselineReport(passed, total int, cards []*ScoreCard) string {
 	var b strings.Builder
@@ -42,6 +51,20 @@ func FormatBaselineReport(passed, total int, cards []*ScoreCard) string {
 		fmt.Fprintf(&b, "  %s %s score=%.2f\n", status, c.Rubric, c.Score)
 	}
 	return b.String()
+}
+
+// FormatBaselineReportJSON returns the baseline results as JSON bytes.
+func FormatBaselineReportJSON(passed, total int, cards []*ScoreCard) ([]byte, error) {
+	report := BaselineReport{
+		Passed:   passed,
+		Total:    total,
+		PassRate: 0,
+		Cards:    cards,
+	}
+	if total > 0 {
+		report.PassRate = float64(passed) / float64(total)
+	}
+	return json.MarshalIndent(report, "", "  ")
 }
 
 // WriteBaselineStamp writes a one-line stamp for doctor hints.

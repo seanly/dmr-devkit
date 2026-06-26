@@ -1,5 +1,7 @@
 package eval
 
+import "time"
+
 // Rubric defines scored evaluation dimensions for agent tapes.
 type Rubric struct {
 	Name      string      `yaml:"name"`
@@ -7,9 +9,73 @@ type Rubric struct {
 	Dimensions []Dimension `yaml:"dimensions"`
 }
 
+// EvalMeta carries run-level metadata for a ScoreCard.
+type EvalMeta struct {
+	StartedAt  time.Time     `json:"started_at,omitempty"`
+	FinishedAt time.Time     `json:"finished_at,omitempty"`
+	Duration   time.Duration `json:"duration,omitempty"`
+	GitSHA     string        `json:"git_sha,omitempty"`
+	GitBranch  string        `json:"git_branch,omitempty"`
+	Model      string        `json:"model,omitempty"`
+	Version    string        `json:"version,omitempty"`
+}
+
+// JudgeMeta carries per-judge-call metadata (tokens, latency, cost).
+type JudgeMeta struct {
+	Tokens   int           `json:"tokens,omitempty"`
+	Latency  time.Duration `json:"latency,omitempty"`
+	Cost     float64       `json:"cost,omitempty"`
+	Model    string        `json:"model,omitempty"`
+	CacheHit bool          `json:"cache_hit,omitempty"`
+}
+
+// CostMeta aggregates judge costs across dimensions.
+type CostMeta struct {
+	Calls      int           `json:"calls"`
+	Tokens     int           `json:"tokens"`
+	Latency    time.Duration `json:"latency"`
+	Cost       float64       `json:"cost"`
+	CacheHits  int           `json:"cache_hits"`
+}
+
+// CostTracker collects judge costs across dimensions.
+type CostTracker struct {
+	calls     int
+	tokens    int
+	latency   time.Duration
+	cost      float64
+	cacheHits int
+}
+
+// Add records a single judge call's metadata.
+func (c *CostTracker) Add(meta JudgeMeta) {
+	c.calls++
+	c.tokens += meta.Tokens
+	c.latency += meta.Latency
+	c.cost += meta.Cost
+	if meta.CacheHit {
+		c.cacheHits++
+	}
+}
+
+// Snapshot returns an immutable copy of the aggregated cost.
+func (c *CostTracker) Snapshot() *CostMeta {
+	if c == nil {
+		return nil
+	}
+	return &CostMeta{
+		Calls:     c.calls,
+		Tokens:    c.tokens,
+		Latency:   c.latency,
+		Cost:      c.cost,
+		CacheHits: c.cacheHits,
+	}
+}
+
 type Dimension struct {
 	ID         string      `yaml:"id"`
 	Weight     float64     `yaml:"weight"`
+	PassScore  float64     `yaml:"pass_score,omitempty"`
 	Assertions []Assertion `yaml:"assertions"`
 	Judge      *JudgeSpec  `yaml:"judge,omitempty"`
 }
@@ -23,6 +89,8 @@ type Assertion struct {
 	Regex string         `yaml:"regex,omitempty"`
 	Role  string         `yaml:"role,omitempty"`
 	Min   int            `yaml:"min_count,omitempty"`
+	Negate bool          `yaml:"negate,omitempty"`
+	AnyOf []Assertion    `yaml:"any_of,omitempty"`
 	Extra map[string]any `yaml:",inline"`
 }
 
@@ -35,23 +103,27 @@ type JudgeSpec struct {
 
 // ScoreCard is the outcome of evaluating a tape against a rubric.
 type ScoreCard struct {
-	Rubric   string            `json:"rubric"`
-	Passed   bool              `json:"passed"`
-	Score    float64           `json:"score"`
+	Rubric    string            `json:"rubric"`
+	Passed    bool              `json:"passed"`
+	Score     float64           `json:"score"`
 	PassScore float64          `json:"pass_score"`
-	Results  []DimensionResult `json:"results"`
+	Results   []DimensionResult `json:"results"`
+	Metadata  *EvalMeta         `json:"metadata,omitempty"`
+	Cost      *CostMeta         `json:"cost,omitempty"`
 }
 
 type DimensionResult struct {
-	ID      string  `json:"id"`
-	Weight  float64 `json:"weight"`
-	Score   float64 `json:"score"`
-	Passed  bool    `json:"passed"`
-	Skipped bool    `json:"skipped,omitempty"`
-	Detail  string  `json:"detail,omitempty"`
+	ID        string     `json:"id"`
+	Weight    float64    `json:"weight"`
+	Score     float64    `json:"score"`
+	Passed    bool       `json:"passed"`
+	Skipped   bool       `json:"skipped,omitempty"`
+	Detail    string     `json:"detail,omitempty"`
+	JudgeMeta *JudgeMeta `json:"judge_meta,omitempty"`
 }
 
 // Options configures tape evaluation (optional LLM judge dimensions).
 type Options struct {
 	Judge JudgeFunc
+	Cost  *CostTracker
 }

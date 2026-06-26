@@ -121,11 +121,124 @@ func TestEvaluateTapeWithMockJudge(t *testing.T) {
 		}},
 	}
 	opts := &Options{
-		Judge: func(_ context.Context, _ []tape.TapeEntry, _ JudgeSpec) (float64, string, error) {
-			return 9, "good", nil
+		Judge: func(_ context.Context, _ []tape.TapeEntry, _ JudgeSpec) (float64, string, JudgeMeta, error) {
+			return 9, "good", JudgeMeta{}, nil
 		},
 	}
 	card, err := EvaluateTapeWithOptions(context.Background(), nil, r, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestAssertionNegate(t *testing.T) {
+	r := &Rubric{
+		Name:      "negate",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "no_shell",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type: "tool_not_called", Name: "shell",
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"})}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestAssertionAnyOf(t *testing.T) {
+	r := &Rubric{
+		Name:      "anyof",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "fs_or_shell",
+			Weight: 1,
+			Assertions: []Assertion{{
+				AnyOf: []Assertion{
+					{Type: "tool_called", Name: "fsGrep"},
+					{Type: "tool_called", Name: "shell"},
+				},
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":   "c1",
+			"type": "function",
+			"function": map[string]any{
+				"name":      "fsGrep",
+				"arguments": "{}",
+			},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestDimensionPassScore(t *testing.T) {
+	r := &Rubric{
+		Name:      "partial",
+		PassScore: 0.5,
+		Dimensions: []Dimension{{
+			ID:        "partial",
+			Weight:    1,
+			PassScore: 0.5,
+			Assertions: []Assertion{
+				{Type: "tool_called", Name: "fsGrep"},
+				{Type: "tool_called", Name: "shell"},
+			},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":   "c1",
+			"type": "function",
+			"function": map[string]any{
+				"name":      "fsGrep",
+				"arguments": "{}",
+			},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass with dimension pass_score 0.5: %+v", card)
+	}
+}
+
+func TestRegisterCustomAssertion(t *testing.T) {
+	RegisterAssertion("always_true", func(_ []tape.TapeEntry, _ Assertion) (bool, error) {
+		return true, nil
+	})
+	r := &Rubric{
+		Name:      "custom",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "custom",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type: "always_true",
+			}},
+		}},
+	}
+	card, err := EvaluateTape(nil, r)
 	if err != nil {
 		t.Fatal(err)
 	}

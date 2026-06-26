@@ -11,6 +11,28 @@ import (
 	"github.com/seanly/dmr-devkit/tape"
 )
 
+// AssertionFunc evaluates a single assertion against tape entries.
+type AssertionFunc func(entries []tape.TapeEntry, a Assertion) (bool, error)
+
+var assertionRegistry = map[string]AssertionFunc{}
+
+// RegisterAssertion registers a custom assertion type.
+// Built-in assertions are registered in init().
+func RegisterAssertion(name string, fn AssertionFunc) {
+	assertionRegistry[name] = fn
+}
+
+func init() {
+	RegisterAssertion("task_state_field_present", assertTaskStateFieldPresent)
+	RegisterAssertion("task_state_constraint", assertTaskStateConstraint)
+	RegisterAssertion("tool_called", assertToolCalled)
+	RegisterAssertion("tool_not_called", assertToolNotCalled)
+	RegisterAssertion("tape_entry_kind", assertTapeEntryKind)
+	RegisterAssertion("anchor_exists", assertAnchorExists)
+	RegisterAssertion("loop_event", assertLoopEvent)
+	RegisterAssertion("tape_must_not_match", assertTapeMustNotMatch)
+}
+
 // EvaluateTape runs deterministic assertions in rubric against tape entries.
 // LLM judge dimensions are skipped (excluded from score) unless Options.Judge is set.
 func EvaluateTape(entries []tape.TapeEntry, rubric *Rubric) (*ScoreCard, error) {
@@ -32,6 +54,9 @@ func EvaluateTapeWithOptions(ctx context.Context, entries []tape.TapeEntry, rubr
 	}
 	var weighted float64
 	var totalWeight float64
+	if opts != nil && opts.Cost == nil {
+		opts.Cost = &CostTracker{}
+	}
 	for _, dim := range rubric.Dimensions {
 		w := dim.Weight
 		if w <= 0 {
@@ -54,6 +79,9 @@ func EvaluateTapeWithOptions(ctx context.Context, entries []tape.TapeEntry, rubr
 		card.Score = 1
 	}
 	card.Passed = card.Score >= rubric.PassScore
+	if opts != nil && opts.Cost != nil {
+		card.Cost = opts.Cost.Snapshot()
+	}
 	return card, nil
 }
 
@@ -68,13 +96,14 @@ func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dime
 			res.Detail = "judge skipped (pass --judge-model to score)"
 			return res, nil
 		}
-		score, detail, err := opts.Judge(ctx, entries, *dim.Judge)
+		score, detail, meta, err := opts.Judge(ctx, entries, *dim.Judge)
 		if err != nil {
 			return res, err
 		}
 		res.Score = normalizeJudgeScore(score, dim.Judge)
 		res.Passed = res.Score >= judgePassThreshold(dim.Judge)
 		res.Detail = detail
+		res.JudgeMeta = &meta
 		return res, nil
 	}
 
@@ -83,7 +112,7 @@ func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dime
 		return res, err
 	}
 	res.Score = score
-	res.Passed = score >= 1.0
+	res.Passed = score >= dimensionPassScore(dim)
 
 	if dim.Judge != nil {
 		if opts == nil || opts.Judge == nil {
@@ -92,7 +121,7 @@ func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dime
 			res.Detail = detail + "; judge skipped (pass --judge-model to score)"
 			return res, nil
 		}
-		jScore, jDetail, err := opts.Judge(ctx, entries, *dim.Judge)
+		jScore, jDetail, meta, err := opts.Judge(ctx, entries, *dim.Judge)
 		if err != nil {
 			return res, err
 		}
@@ -100,6 +129,7 @@ func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dime
 		res.Score = (score + jNorm) / 2
 		res.Passed = res.Score >= judgePassThreshold(dim.Judge) && score >= 1.0
 		res.Detail = detail + "; judge: " + jDetail
+		res.JudgeMeta = &meta
 		return res, nil
 	}
 
@@ -116,6 +146,13 @@ func judgePassThreshold(spec *JudgeSpec) float64 {
 		max = 10
 	}
 	return float64(spec.MinScore) / float64(max)
+}
+
+func dimensionPassScore(dim Dimension) float64 {
+	if dim.PassScore > 0 {
+		return dim.PassScore
+	}
+	return 1.0
 }
 
 func normalizeJudgeScore(score float64, spec *JudgeSpec) float64 {
@@ -160,83 +197,122 @@ func evalDimension(entries []tape.TapeEntry, dim Dimension) (float64, string, er
 }
 
 func evalAssertion(entries []tape.TapeEntry, a Assertion) (bool, error) {
-	switch a.Type {
-	case "task_state_field_present":
-		st := handoff.LatestState(entries)
-		if st == nil {
-			return false, nil
-		}
-		switch a.Field {
-		case "goal":
-			return st.Goal != "", nil
-		default:
-			return false, fmt.Errorf("unknown task_state field %q", a.Field)
-		}
-	case "tool_called":
-		return countToolCalls(entries, a.Name) >= max1(a.Min), nil
-	case "tool_not_called":
-		return countToolCalls(entries, a.Name) == 0, nil
-	case "tape_entry_kind":
-		n := countKind(entries, a.Name)
-		return n >= max1(a.Min), nil
-	case "anchor_exists":
-		for _, e := range entries {
-			if e.Kind != "anchor" {
-				continue
+	if len(a.AnyOf) > 0 {
+		for _, sub := range a.AnyOf {
+			ok, err := evalAssertion(entries, sub)
+			if err != nil {
+				return false, err
 			}
-			name, _ := e.Payload["name"].(string)
-			if name == a.Name {
-				return true, nil
+			if ok {
+				return !a.Negate, nil
 			}
 		}
-		return false, nil
-	case "loop_event":
-		for _, e := range entries {
-			if e.Kind != "event" {
-				continue
-			}
-			name, _ := e.Payload["name"].(string)
-			if a.Name != "" && name != a.Name {
-				continue
-			}
-			data, _ := e.Payload["data"].(map[string]any)
-			if a.Field == "" {
-				return true, nil
-			}
-			if matchEventField(data[a.Field], a.Value) {
-				return true, nil
-			}
-		}
-		return false, nil
-	case "tape_must_not_match":
-		re, err := regexp.Compile(a.Regex)
-		if err != nil {
-			return false, err
-		}
-		for _, e := range entries {
-			if e.Kind != "message" {
-				continue
-			}
-			role, _ := e.Payload["role"].(string)
-			if a.Role != "" && role != a.Role {
-				continue
-			}
-			content, _ := e.Payload["content"].(string)
-			if re.MatchString(content) {
-				return false, nil
-			}
-		}
-		return true, nil
-	case "task_state_constraint":
-		st := handoff.LatestState(entries)
-		if st == nil || st.Constraints == nil {
-			return false, nil
-		}
-		v, ok := st.Constraints[a.Key]
-		return ok && v == a.Value, nil
-	default:
+		return a.Negate, nil
+	}
+
+	fn, ok := assertionRegistry[a.Type]
+	if !ok {
 		return false, fmt.Errorf("unknown assertion type %q", a.Type)
 	}
+	result, err := fn(entries, a)
+	if err != nil {
+		return false, err
+	}
+	if a.Negate {
+		return !result, nil
+	}
+	return result, nil
+}
+
+// Built-in assertions
+
+func assertTaskStateFieldPresent(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	st := handoff.LatestState(entries)
+	if st == nil {
+		return false, nil
+	}
+	switch a.Field {
+	case "goal":
+		return st.Goal != "", nil
+	default:
+		return false, fmt.Errorf("unknown task_state field %q", a.Field)
+	}
+}
+
+func assertTaskStateConstraint(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	st := handoff.LatestState(entries)
+	if st == nil || st.Constraints == nil {
+		return false, nil
+	}
+	v, ok := st.Constraints[a.Key]
+	return ok && v == a.Value, nil
+}
+
+func assertToolCalled(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	return countToolCalls(entries, a.Name) >= max1(a.Min), nil
+}
+
+func assertToolNotCalled(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	return countToolCalls(entries, a.Name) == 0, nil
+}
+
+func assertTapeEntryKind(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	n := countKind(entries, a.Name)
+	return n >= max1(a.Min), nil
+}
+
+func assertAnchorExists(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	for _, e := range entries {
+		if e.Kind != "anchor" {
+			continue
+		}
+		name, _ := e.Payload["name"].(string)
+		if name == a.Name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func assertLoopEvent(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	for _, e := range entries {
+		if e.Kind != "event" {
+			continue
+		}
+		name, _ := e.Payload["name"].(string)
+		if a.Name != "" && name != a.Name {
+			continue
+		}
+		data, _ := e.Payload["data"].(map[string]any)
+		if a.Field == "" {
+			return true, nil
+		}
+		if matchEventField(data[a.Field], a.Value) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func assertTapeMustNotMatch(entries []tape.TapeEntry, a Assertion) (bool, error) {
+	re, err := regexp.Compile(a.Regex)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if e.Kind != "message" {
+			continue
+		}
+		role, _ := e.Payload["role"].(string)
+		if a.Role != "" && role != a.Role {
+			continue
+		}
+		content, _ := e.Payload["content"].(string)
+		if re.MatchString(content) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func matchEventField(got any, want string) bool {
@@ -312,7 +388,11 @@ func FormatScoreCard(card *ScoreCard) string {
 		if r.Skipped {
 			skip = " skipped"
 		}
-		fmt.Fprintf(&b, "  - %s: score=%.2f passed=%v%s %s\n", r.ID, r.Score, r.Passed, skip, r.Detail)
+		fmt.Fprintf(&b, "  - %s: score=%.2f passed=%v%s %s", r.ID, r.Score, r.Passed, skip, r.Detail)
+		if r.JudgeMeta != nil && r.JudgeMeta.Tokens > 0 {
+			fmt.Fprintf(&b, " [tokens=%d cost=%.4f]", r.JudgeMeta.Tokens, r.JudgeMeta.Cost)
+		}
+		fmt.Fprintln(&b)
 	}
 	return b.String()
 }
