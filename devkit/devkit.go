@@ -12,6 +12,7 @@ import (
 	"github.com/seanly/dmr-devkit/client"
 	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/core"
+	"github.com/seanly/dmr-devkit/observe"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
 )
@@ -85,6 +86,13 @@ type Options struct {
 
 	MaxSteps int
 
+	// MaxDuplicateToolCalls limits repeated identical tool calls within a single
+	// agent run. Zero uses the agent default (2).
+	MaxDuplicateToolCalls int
+	// MaxTotalToolCalls limits the total tool calls within a single agent run.
+	// Zero uses the agent default (20).
+	MaxTotalToolCalls int
+
 	// AgentPolicy is optional policy (handoff, token limits, etc.).
 	AgentPolicy config.AgentConfig
 
@@ -108,6 +116,9 @@ type Options struct {
 
 	// TapeTimezone is passed to [tape.SetTimezone] when non-empty (optional).
 	TapeTimezone string
+
+	// Tracer enables OpenTelemetry-aligned spans. When nil, no spans are recorded.
+	Tracer *observe.Tracer
 }
 
 func (o *Options) modelConfig() config.ModelConfig {
@@ -287,14 +298,17 @@ func Build(ctx context.Context, opts Options) (*Kit, error) {
 	}
 
 	agCfg := agent.Config{
-		MaxSteps:         maxSteps,
-		AgentPolicy:      opts.AgentPolicy,
-		SystemPrompt:     systemPrompt,
-		SystemPromptBase: finalBase,
-		Tools:            opts.Tools,
-		Workspace:        opts.Workspace,
-		Verbose:          opts.Verbose,
-		Models:           models,
+		MaxSteps:              maxSteps,
+		MaxDuplicateToolCalls: opts.MaxDuplicateToolCalls,
+		MaxTotalToolCalls:     opts.MaxTotalToolCalls,
+		AgentPolicy:           opts.AgentPolicy,
+		SystemPrompt:          systemPrompt,
+		SystemPromptBase:      finalBase,
+		Tools:                 opts.Tools,
+		Workspace:             opts.Workspace,
+		Verbose:               opts.Verbose,
+		Models:                models,
+		Tracer:                opts.Tracer,
 	}
 
 	ag := agent.New(chat, tm, hooks, agCfg)

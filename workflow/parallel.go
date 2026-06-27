@@ -14,6 +14,9 @@ import (
 type Parallel struct {
 	WorkflowName string
 	Nodes        []Node
+	// MaxConcurrent limits how many branches run at the same time.
+	// Zero or negative means unlimited (default behaviour, backward compatible).
+	MaxConcurrent int
 }
 
 // Name returns the workflow name; satisfies [workflow.Node].
@@ -48,10 +51,21 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 		s := scope.Root(ctx, "parallel:"+p.WorkflowName)
 		defer s.Close()
 
+		var sem chan struct{}
+		if p.MaxConcurrent > 0 && p.MaxConcurrent < len(p.Nodes) {
+			sem = make(chan struct{}, p.MaxConcurrent)
+		}
+
 		for i, n := range p.Nodes {
+			if sem != nil {
+				sem <- struct{}{}
+			}
 			idx := i
 			node := n
 			s.Go(node.Name(), func(scopedCtx context.Context) error {
+				if sem != nil {
+					defer func() { <-sem }()
+				}
 				fork := wctx.WithMetadata(nil)
 				fork.Step = wctx.Step + idx
 
@@ -76,7 +90,7 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 					return nil
 				}
 
-				out, err := runNode(scopedCtx, fork, fork.Step, node, input)
+				out, err := runNodeWithSpan(scopedCtx, fork, fork.Step, node, input)
 				outcomes[idx] = branchOutcome{idx: idx, node: node, out: out, err: err}
 				return nil
 			})

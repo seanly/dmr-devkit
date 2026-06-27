@@ -57,7 +57,7 @@ func (s *Sequential) RunEvents(ctx context.Context, wctx *Context, input any) it
 			}
 
 			// Execute
-			out, err := runNode(ctx, wctx, wctx.Step, n, current)
+			out, err := runNodeWithSpan(ctx, wctx, wctx.Step, n, current)
 
 			// NodeEnd
 			endEv := newEvent(EventTypeNodeEnd, s.WorkflowName, n.Name(), wctx.Step)

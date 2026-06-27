@@ -8,6 +8,8 @@ package workflow
 import (
 	"context"
 	"fmt"
+
+	"github.com/seanly/dmr-devkit/observe"
 )
 
 // Node is the basic executable unit in a workflow.
@@ -108,6 +110,18 @@ func runNodeNamed(ctx context.Context, wctx *Context, step int, nodes map[string
 	n, ok := nodes[name]
 	if !ok {
 		return nil, fmt.Errorf("workflow: node %q not found", name)
+	}
+	return runNodeWithSpan(ctx, wctx, step, n, input)
+}
+
+// runNodeWithSpan executes a node, wrapping it in an observe span when a tracer
+// is present in the context.
+func runNodeWithSpan(ctx context.Context, wctx *Context, step int, n Node, input any) (any, error) {
+	if tr := observe.TracerFromContext(ctx); tr != nil {
+		ctx, finish := tr.StartNode(ctx, n.Name(), step)
+		out, err := runNode(ctx, wctx, step, n, input)
+		finish(err)
+		return out, err
 	}
 	return runNode(ctx, wctx, step, n, input)
 }

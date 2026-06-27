@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/seanly/dmr-devkit/core"
@@ -32,6 +33,18 @@ type ToolExecutor struct {
 	BatchBeforeToolCall BatchBeforeToolCallFunc
 	// Verbose mirrors config verbose: when >= 1, log each tool invocation (args + result, truncated by level).
 	Verbose int
+
+	// MaxDuplicateToolCalls limits how many times the same tool with the same
+	// arguments may be executed within a single agent run. Zero disables the
+	// duplicate guard.
+	MaxDuplicateToolCalls int
+	// MaxTotalToolCalls limits the total number of tool calls in a single agent
+	// run. Zero disables the total guard.
+	MaxTotalToolCalls int
+
+	mu          sync.Mutex
+	dupCounts   map[string]int // key: tapeName + "\x00" + toolName + "\x00" + argsJSON
+	totalCounts map[string]int // key: tapeName
 }
 
 // resolvedCall holds a validated and parsed tool call.
@@ -42,7 +55,72 @@ type resolvedCall struct {
 }
 
 func NewToolExecutor() *ToolExecutor {
-	return &ToolExecutor{}
+	return &ToolExecutor{
+		dupCounts:   make(map[string]int),
+		totalCounts: make(map[string]int),
+	}
+}
+
+// ResetBudget clears per-tape tool-call counters. The agent loop should call
+// this at the start of each run so budgets are scoped to a single invocation.
+func (e *ToolExecutor) ResetBudget(tapeName string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	prefix := tapeName + "\x00"
+	for k := range e.dupCounts {
+		if strings.HasPrefix(k, prefix) {
+			delete(e.dupCounts, k)
+		}
+	}
+	delete(e.totalCounts, tapeName)
+}
+
+// checkBudget enforces MaxTotalToolCalls and MaxDuplicateToolCalls per tape.
+// It mutates resolved[i].err to deny calls that exceed the configured budgets.
+func (e *ToolExecutor) checkBudget(calls []core.ToolCallData, resolved []resolvedCall, ctx *ToolContext) {
+	tapeName := ""
+	if ctx != nil {
+		tapeName = ctx.Tape
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.MaxTotalToolCalls > 0 {
+		total := e.totalCounts[tapeName] + len(calls)
+		if total > e.MaxTotalToolCalls {
+			for i := range calls {
+				if resolved[i].err == nil {
+					resolved[i].err = &core.ErrorPayload{
+						Kind:    core.ErrDenied,
+						Message: fmt.Sprintf("total tool call budget exceeded (%d/%d); stop calling tools and produce a final answer", e.totalCounts[tapeName], e.MaxTotalToolCalls),
+					}
+				}
+			}
+			e.totalCounts[tapeName] = total
+			return
+		}
+		e.totalCounts[tapeName] = total
+	}
+
+	if e.MaxDuplicateToolCalls <= 0 {
+		return
+	}
+
+	for i, call := range calls {
+		if resolved[i].err != nil {
+			continue
+		}
+		key := tapeName + "\x00" + call.Function.Name + "\x00" + call.Function.Arguments
+		if e.dupCounts[key] >= e.MaxDuplicateToolCalls {
+			resolved[i].err = &core.ErrorPayload{
+				Kind:    core.ErrDenied,
+				Message: fmt.Sprintf("tool %q with the same arguments has already been called %d times; do not call it again", call.Function.Name, e.dupCounts[key]),
+			}
+			continue
+		}
+		e.dupCounts[key]++
+	}
 }
 
 // Execute processes a list of tool calls and returns the execution results.
@@ -105,6 +183,9 @@ func (e *ToolExecutor) Execute(
 		resolved[i].tool = t
 		resolved[i].args = args
 	}
+
+	// Phase 1.5: enforce per-run tool-call budgets (duplicate / total).
+	e.checkBudget(calls, resolved, ctx)
 
 	// Phase 2: batch policy check
 	denied := e.batchPolicyCheck(resolved, ctx)

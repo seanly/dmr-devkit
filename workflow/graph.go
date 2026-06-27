@@ -46,6 +46,9 @@ type Graph struct {
 	// "START" is the reserved entry node name.
 	// "END"   is the reserved terminal node name.
 	Edges []Edge
+	// MaxConcurrent limits how many parallel branches run at the same time.
+	// Zero or negative means unlimited (default behaviour, backward compatible).
+	MaxConcurrent int
 }
 
 // Edge defines a directed connection between two nodes.
@@ -225,7 +228,7 @@ func (g *Graph) runSequentialEvents(ctx context.Context, wctx *Context, adj map[
 			return nil, fmt.Errorf("workflow %q: consumer stopped", g.Name)
 		}
 
-		out, err := runNode(ctx, wctx, wctx.Step, n, current)
+		out, err := runNodeWithSpan(ctx, wctx, wctx.Step, n, current)
 		steps++
 
 		endEv := newEvent(EventTypeNodeEnd, g.Name, n.Name(), wctx.Step)
@@ -352,10 +355,21 @@ func (g *Graph) runWithJoin(ctx context.Context, wctx *Context, adj map[string][
 	results := make([]branchResult, len(targets))
 	var wg sync.WaitGroup
 
+	var sem chan struct{}
+	if g.MaxConcurrent > 0 && g.MaxConcurrent < len(targets) {
+		sem = make(chan struct{}, g.MaxConcurrent)
+	}
+
 	for i, start := range targets {
+		if sem != nil {
+			sem <- struct{}{}
+		}
 		wg.Add(1)
 		go func(idx int, name string) {
 			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
 			fork := wctx.WithMetadata(nil)
 			fork.Step = wctx.Step + idx
 			res, err := g.runSequential(ctx, fork, adj, name, input)
@@ -410,10 +424,21 @@ func (g *Graph) runWithJoinEvents(ctx context.Context, wctx *Context, adj map[st
 	results := make([]branchResult, len(starts))
 	var wg sync.WaitGroup
 
+	var sem chan struct{}
+	if g.MaxConcurrent > 0 && g.MaxConcurrent < len(starts) {
+		sem = make(chan struct{}, g.MaxConcurrent)
+	}
+
 	for i, start := range starts {
+		if sem != nil {
+			sem <- struct{}{}
+		}
 		wg.Add(1)
 		go func(idx int, name string) {
 			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
 			fork := wctx.WithMetadata(nil)
 			fork.Step = wctx.Step + idx
 			res, err := g.runSequential(ctx, fork, adj, name, input)

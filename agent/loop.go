@@ -79,6 +79,14 @@ func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string
 }
 
 func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, mode *runMode, contextJSON string) (result *Result, toolIterations int, err error) {
+	// --- OpenTelemetry span wrapper ---
+	if a.config.Tracer != nil {
+		var finish func(error)
+		ctx, finish = a.config.Tracer.StartAgent(ctx, tapeName, "agent")
+		defer finish(err)
+	}
+	// ------------------------------------
+
 	// --- Execution lifecycle tracking ---
 	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
 	agentID := ""
@@ -88,6 +96,11 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	tc := tape.NewTapeController(a.tape)
 	_ = tc.RecordExecStart(tapeName, execID, agentID, nil)
 	_ = tc.RecordExecState(tapeName, execID, tape.ExecStatePending)
+	if a.executor != nil {
+		a.executor.MaxDuplicateToolCalls = a.config.MaxDuplicateToolCalls
+		a.executor.MaxTotalToolCalls = a.config.MaxTotalToolCalls
+		a.executor.ResetBudget(tapeName)
+	}
 	defer func() {
 		if err != nil {
 			_ = tc.RecordExecState(tapeName, execID, tape.ExecStateFailed)
@@ -314,7 +327,26 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		}
 
 		// Check BeforeToolCall hooks will be done inside executor
-		result, err := chatClient.RunTools(ctx, opts)
+		result, err := func() (*core.ToolAutoResult, error) {
+			callCtx := ctx
+			var finishLLM func(int, error)
+			if a.config.Tracer != nil {
+				modelName := "unknown"
+				if m := a.GetCurrentModel(tapeName); m != nil {
+					modelName = m.Model
+				}
+				callCtx, finishLLM = a.config.Tracer.StartLLMCall(ctx, "llm", modelName)
+			}
+			res, err := chatClient.RunTools(callCtx, opts)
+			if finishLLM != nil {
+				totalTokens := 0
+				if res != nil && res.Usage != nil {
+					totalTokens, _ = intFromUsageMap(res.Usage, "total_tokens")
+				}
+				finishLLM(totalTokens, err)
+			}
+			return res, err
+		}()
 		if err != nil {
 			// Wrap with structured metadata so downstream recovery dispatch is uniform.
 			err = core.FromError(err).

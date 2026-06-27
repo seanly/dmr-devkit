@@ -17,6 +17,7 @@ import (
 	"github.com/seanly/dmr-devkit/client"
 	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/core"
+	"github.com/seanly/dmr-devkit/observe"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
 	"github.com/seanly/dmr-devkit/tools/toolsearch"
@@ -36,15 +37,26 @@ type Config struct {
 	// Used by systemPromptBaseForTape() to select per-tape system prompts.
 	SystemPromptBases map[string]string
 	// TapeModels maps tape name glob patterns to model names for per-tape model selection.
-	TapeModels map[string]string
-	Tools      []*tool.Tool
-	Workspace  string
-	Verbose    int
-	Models     []config.ModelConfig
-	OnToolCall func(event ToolCallEvent) // optional callback for tool call display
-	OnUIWidget func(widget any)          // optional callback for A2UI widget payloads
-	TapeControl any                      // plugin.TapeControl — injected by host
-	DefaultTape  string                  // canonical session tape for stable override keys
+	TapeModels  map[string]string
+	Tools       []*tool.Tool
+	Workspace   string
+	Verbose     int
+	Models      []config.ModelConfig
+	OnToolCall  func(event ToolCallEvent) // optional callback for tool call display
+	OnUIWidget  func(widget any)          // optional callback for A2UI widget payloads
+	TapeControl any                       // plugin.TapeControl — injected by host
+	DefaultTape string                    // canonical session tape for stable override keys
+
+	// Tracer enables OpenTelemetry-aligned spans for agent, llm_call and tool_call
+	// lifecycle events. When nil, no spans are recorded.
+	Tracer *observe.Tracer
+
+	// MaxDuplicateToolCalls limits how many times the same tool with the same
+	// arguments may be executed within a single agent run. Zero disables the guard.
+	MaxDuplicateToolCalls int
+	// MaxTotalToolCalls limits the total number of tool calls in a single agent
+	// run. Zero disables the guard.
+	MaxTotalToolCalls int
 }
 
 // Agent orchestrates multi-turn LLM + tool execution.
@@ -66,7 +78,7 @@ type Agent struct {
 	toolsCache   map[string][]*tool.Tool // per-tape tool list cache
 
 	onToolCallMu      sync.RWMutex // protects config.OnToolCall
-	reviewRunner       ReviewDelegate
+	reviewRunner      ReviewDelegate
 	extendedTools     []*tool.Tool // cached extended tools from all plugins
 	extendedToolsOnce sync.Once    // ensure extended tools are loaded once
 	extendedToolsMu   sync.Mutex   // protects extendedToolsOnce reset
@@ -100,6 +112,12 @@ func (a *Agent) SetDefaultTape(tape string) {
 func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config) *Agent {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 20
+	}
+	if cfg.MaxDuplicateToolCalls == 0 {
+		cfg.MaxDuplicateToolCalls = 2
+	}
+	if cfg.MaxTotalToolCalls == 0 {
+		cfg.MaxTotalToolCalls = 20
 	}
 	if hooks == nil {
 		hooks = noopHooks{}
@@ -155,6 +173,13 @@ func (a *Agent) EmitUIWidget(widget any) {
 	if fn != nil {
 		fn(widget)
 	}
+}
+
+// Tracer returns the configured tracer, or nil.
+func (a *Agent) Tracer() *observe.Tracer {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.config.Tracer
 }
 
 // SetExecutor stores the tool executor reference for rebuilding chat clients.

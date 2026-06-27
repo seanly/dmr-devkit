@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seanly/dmr-devkit/agent"
+	"github.com/seanly/dmr-devkit/observe"
 	"github.com/seanly/dmr-devkit/workflow"
 )
 
@@ -200,6 +201,9 @@ func (k *Kit) RunWorkflow(ctx context.Context, runner workflow.Runner, input any
 	wctx.Metadata["tape_manager"] = k.TapeManager
 	wctx.Metadata["agent"] = k.Agent
 	wctx.Metadata["hooks"] = k.Hooks
+	if k.Agent != nil && k.Agent.Tracer() != nil {
+		ctx = observe.WithTracer(ctx, k.Agent.Tracer())
+	}
 	out, err := runner.Run(ctx, wctx, input)
 	res, ok := out.(*workflow.Result)
 	if !ok {
@@ -218,6 +222,9 @@ func (k *Kit) RunWorkflowStream(ctx context.Context, runner workflow.EventStream
 		wctx.Metadata["tape_manager"] = k.TapeManager
 		wctx.Metadata["agent"] = k.Agent
 		wctx.Metadata["hooks"] = k.Hooks
+		if k.Agent != nil && k.Agent.Tracer() != nil {
+			ctx = observe.WithTracer(ctx, k.Agent.Tracer())
+		}
 		for ev, err := range runner.RunEvents(ctx, wctx, input) {
 			if !yield(ev, err) {
 				return
