@@ -140,6 +140,7 @@ func (m *TapeManager) RecordChat(opts RecordChatOpts) {
 type CompactOpts struct {
 	Tape       string
 	AnchorName string // optional, defaults to compact:<timestamp>
+	EventName  string // optional, defaults to "compact"
 	Summarizer func(ctx context.Context, messages []map[string]any) (string, error)
 }
 
@@ -193,7 +194,11 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	}
 
 	// 6. Record compact event
-	event := NewEventEntry("compact", map[string]any{
+	eventName := opts.EventName
+	if eventName == "" {
+		eventName = "compact"
+	}
+	event := NewEventEntry(eventName, map[string]any{
 		"anchor":         name,
 		"summary_length": len(summary),
 	})

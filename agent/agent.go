@@ -20,6 +20,7 @@ import (
 	"github.com/seanly/dmr-devkit/observe"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
+	"github.com/seanly/dmr-devkit/tools/handoff"
 	"github.com/seanly/dmr-devkit/tools/toolsearch"
 )
 
@@ -138,9 +139,9 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 	a.precomputePromptBases()
 	a.precomputeTapeModels()
 
-	// Inject built-in toolSearch for deferred tool discovery.
+	// Inject built-in toolSearch for deferred tool discovery and handoff for focused compaction.
 	// Copy config.Tools to avoid mutating the caller's slice.
-	builtinTools := []*tool.Tool{toolsearch.NewTool(a)}
+	builtinTools := []*tool.Tool{toolsearch.NewTool(a), handoff.NewTool(a)}
 	if len(a.config.Tools) > 0 {
 		builtinTools = append(builtinTools, a.config.Tools...)
 	}

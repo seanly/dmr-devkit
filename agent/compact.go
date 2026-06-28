@@ -11,16 +11,65 @@ import (
 
 // CompactTape compacts the current tape context into a summary and returns the summary text.
 func (a *Agent) CompactTape(ctx context.Context, tapeName string) (string, error) {
-	return a.compact(ctx, tapeName, "")
+	return a.compact(ctx, tapeName, "", "")
 }
 
 // CompactTapeWithName compacts with a specific anchor name (used by auto-handoff).
 func (a *Agent) CompactTapeWithName(ctx context.Context, tapeName, anchorName string) error {
-	_, err := a.compact(ctx, tapeName, anchorName)
+	_, err := a.compact(ctx, tapeName, anchorName, "")
 	return err
 }
 
-func (a *Agent) compact(ctx context.Context, tapeName, anchorName string) (string, error) {
+// CompactTapeWithFocus compacts the current tape context into a summary focused on
+// the given topic. It writes a handoff/tool anchor + compact_summary + handoff/tool event.
+func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string) (string, error) {
+	slog.Info("compact: starting focused summarization", "tape", tapeName, "focus", focus)
+
+	if a.clearToolsOnCompact() {
+		a.ClearDiscoveredTools(tapeName)
+		if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
+			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
+		}
+	}
+
+	if !a.llmCompactEnabled() {
+		slog.Info("compact: skipped LLM summary (minimal profile)")
+		return "", nil
+	}
+
+	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
+		Tape:       tapeName,
+		AnchorName: "handoff/tool",
+		EventName:  "handoff/tool",
+		Summarizer: a.buildSummarizer(focus),
+	})
+	if err != nil {
+		slog.Error("compact: focused summarization failed", "error", err)
+		return "", err
+	}
+	for _, e := range entries {
+		if e.Kind != "compact_summary" {
+			continue
+		}
+		if c, ok := e.Payload["content"].(string); ok {
+			slog.Info("compact: focused summary generated", "chars", len(c), "summary", c)
+			if a.summaryJudgeEnabled() {
+				entries, _ := a.tape.Store.FetchAll(tapeName, nil)
+				st := handoff.LatestState(entries)
+				pass := validateCompactSummary(st, c)
+				judgePass := pass
+				a.recordCompactEvent(tapeName, true, len(c), &judgePass)
+				if !pass {
+					slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
+				}
+			}
+			return c, nil
+		}
+	}
+	return "", nil
+}
+
+func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string) (string, error) {
 	slog.Info("compact: starting summarization", "tape", tapeName)
 
 	if a.clearToolsOnCompact() {
@@ -38,7 +87,7 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName string) (strin
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
 		Tape:       tapeName,
 		AnchorName: anchorName,
-		Summarizer: a.buildSummarizer(),
+		Summarizer: a.buildSummarizer(focus),
 	})
 	if err != nil {
 		slog.Error("compact: summarization failed", "error", err)
@@ -66,7 +115,7 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName string) (strin
 	return "", nil
 }
 
-func (a *Agent) buildSummarizer() func(ctx context.Context, messages []map[string]any) (string, error) {
+func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages []map[string]any) (string, error) {
 	return func(ctx context.Context, messages []map[string]any) (string, error) {
 		// Optimize messages before sending to LLM
 		originalCount := len(messages)
@@ -94,6 +143,9 @@ func (a *Agent) buildSummarizer() func(ctx context.Context, messages []map[strin
 
 		// Use structured prompt (Claude Code style)
 		prompt := structuredCompactPrompt
+		if focus != "" {
+			prompt += "\n\nIMPORTANT: The user has requested that the summary focus on the following topic. Prioritize information related to this focus, but still preserve other critical technical details.\nFocus: " + focus
+		}
 
 		// Send as a single user message containing all conversation content + prompt
 		// Use default chat client for summarization (no per-tape override needed)

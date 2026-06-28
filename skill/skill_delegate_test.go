@@ -26,6 +26,7 @@ func (m *mockRuntimeAgent) AllModelInfos() []agent.ModelInfo                    
 func (m *mockRuntimeAgent) GetCurrentModelName(string) (string, string)                 { return "", "" }
 func (m *mockRuntimeAgent) SwitchModel(string, string) error                            { return nil }
 func (m *mockRuntimeAgent) CompactTape(context.Context, string) (string, error)         { return "", nil }
+func (m *mockRuntimeAgent) CompactTapeWithFocus(context.Context, string, string) (string, error) { return "", nil }
 func (m *mockRuntimeAgent) RestartProcess() error                                       { return nil }
 func (m *mockRuntimeAgent) Run(context.Context, string, string, int32) (*agent.RunResult, error) {
 	return nil, nil

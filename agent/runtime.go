@@ -53,6 +53,7 @@ type RuntimeAgent interface {
 	GetCurrentModelName(tapeName string) (name, model string)
 	SwitchModel(tapeName, modelName string) error
 	CompactTape(ctx context.Context, tapeName string) (summary string, err error)
+	CompactTapeWithFocus(ctx context.Context, tapeName, focus string) (summary string, err error)
 	RestartProcess() error
 
 	// Agent execution (used by cli plugin)
