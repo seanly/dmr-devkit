@@ -3,19 +3,23 @@ package eval
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Fixture describes an eval scenario with a recorded tape and rubric.
 type Fixture struct {
-	Name   string `yaml:"name"`
-	Tape   string `yaml:"tape"`   // tape name label (informational)
-	Rubric string `yaml:"rubric"` // path to rubric YAML
-	TapeFile string `yaml:"tape_file"` // path to JSON entries file
+	Name       string          `yaml:"name"`
+	Tape       string          `yaml:"tape"`              // tape name label (informational)
+	Rubric     string          `yaml:"rubric"`            // path to rubric YAML
+	TapeFile   string          `yaml:"tape_file"`         // path to JSON entries file
+	Plugins    []string        `yaml:"plugins,omitempty"` // required plugins (empty = builtins only)
+	Stochastic *StochasticSpec `yaml:"stochastic,omitempty"`
 }
 
-// LoadFixture reads a fixture YAML file.
+// LoadFixture reads a fixture YAML file and resolves relative rubric/tape paths
+// against the fixture file's directory.
 func LoadFixture(path string) (*Fixture, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -33,6 +37,16 @@ func LoadFixture(path string) (*Fixture, error) {
 	}
 	if f.Name == "" {
 		f.Name = path
+	}
+
+	// Resolve relative paths against the fixture file's directory so fixtures
+	// can live in a separate data repository (e.g. ../dmr-testdata/eval).
+	baseDir := filepath.Dir(path)
+	if !filepath.IsAbs(f.Rubric) {
+		f.Rubric = filepath.Join(baseDir, f.Rubric)
+	}
+	if !filepath.IsAbs(f.TapeFile) {
+		f.TapeFile = filepath.Join(baseDir, f.TapeFile)
 	}
 	return &f, nil
 }

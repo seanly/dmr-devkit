@@ -6,7 +6,7 @@ import (
 )
 
 func TestRunBaselineFixtures(t *testing.T) {
-	dir := filepath.Join("..", "..", "dmr", "testdata", "eval", "fixtures")
+	dir := filepath.Join("..", "..", "dmr-testdata", "eval", "fixtures")
 	passed, total, _, err := RunBaselineFixtures(dir)
 	if err != nil {
 		t.Skipf("fixtures not available: %v", err)
@@ -20,7 +20,7 @@ func TestRunBaselineFixtures(t *testing.T) {
 }
 
 func TestLoadTapeEntries(t *testing.T) {
-	path := filepath.Join("..", "..", "dmr", "testdata", "eval", "tapes", "handoff_recovery.json")
+	path := filepath.Join("..", "..", "dmr-testdata", "eval", "tapes", "handoff_recovery.json")
 	entries, err := LoadTapeEntries(path)
 	if err != nil {
 		t.Skipf("tape file not available: %v", err)

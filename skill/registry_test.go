@@ -33,7 +33,7 @@ Body from first path.
 	assert.Contains(t, skills[0].Location, "local")
 }
 
-func TestSkillDelegateTool_EnumContainsAgentSkills(t *testing.T) {
+func TestSkillDelegateTool_ListsAgentSkillsInDescription(t *testing.T) {
 	tmp := t.TempDir()
 	auto := filepath.Join(tmp, "auto")
 	skillDir := filepath.Join(auto, "book-to-insight-pipeline")
@@ -54,12 +54,15 @@ Body.
 
 	tool := mgr.delegateTool()
 	assert.Equal(t, "delegate", tool.Spec.Name)
+	assert.Contains(t, tool.Spec.Description, "book-to-insight-pipeline")
 
+	// The skill parameter should be a plain string without a fixed enum so that
+	// dynamically created skills are usable immediately.
 	props, ok := tool.Spec.Parameters["properties"].(map[string]any)
 	require.True(t, ok)
 	skillProp, ok := props["skill"].(map[string]any)
 	require.True(t, ok)
-	enum, ok := skillProp["enum"].([]string)
-	require.True(t, ok)
-	assert.Contains(t, enum, "book-to-insight-pipeline")
+	_, hasEnum := skillProp["enum"]
+	assert.False(t, hasEnum, "skill parameter should not have a fixed enum")
+	assert.Equal(t, "string", skillProp["type"])
 }

@@ -17,9 +17,9 @@ import (
 type Manager struct {
 	config Config
 
-	skills        []*Skill
-	resolvedRoots []string
-	lastScanMtime time.Time
+	skills         []*Skill
+	resolvedRoots  []string
+	lastScanMtime  time.Time
 	ensureSkillsMu sync.Mutex
 
 	// toolGroup determines whether skill tools are core or extended.
@@ -188,7 +188,21 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 	if err != nil {
 		return nil, fmt.Errorf("read skill: %w", err)
 	}
-	return fmt.Sprintf("Location: %s\n---\n%s", s.Location, s.Content), nil
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Skill Loaded: %s\n", s.Name)
+	if s.Description != "" {
+		fmt.Fprintf(&b, "**Description:** %s\n", s.Description)
+	}
+	fmt.Fprintf(&b, "**Type:** %s\n", s.Type)
+	if s.Type == "agent" && s.WhenToUse != "" {
+		fmt.Fprintf(&b, "**When to use:** %s\n", s.WhenToUse)
+	}
+	fmt.Fprintf(&b, "**Location:** %s\n\n", s.Location)
+	b.WriteString("## Instructions\n")
+	b.WriteString("Please follow the instructions below when executing this task. Do not deviate from them unless the user explicitly asks otherwise.\n\n")
+	b.WriteString(s.Content)
+	return b.String(), nil
 }
 
 // --- system prompt ---
@@ -276,12 +290,37 @@ func (m *Manager) buildSystemPrompt() (string, error) {
 		lines = append(lines, "To delegate to a specialist, call delegate(skill=<name>, task=<description>).")
 	}
 
+	// Add explicit usage instructions so the LLM knows how and when to invoke skills.
+	if usage := skillUsageInstructions(promptSkills, agentSkills); usage != "" {
+		lines = append(lines, "")
+		lines = append(lines, usage)
+	}
+
 	// Inject structured reasoning prompt when agent skills are active.
 	if len(agentSkills) > 0 {
 		lines = append(lines, structuredReasoningPrompt)
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+// skillUsageInstructions builds the usage-instruction block for the system prompt.
+func skillUsageInstructions(promptSkills, agentSkills []*Skill) string {
+	if len(promptSkills) == 0 && len(agentSkills) == 0 {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "## Skill Usage Instructions")
+	if len(promptSkills) > 0 {
+		lines = append(lines, "- Prompt skills: when a task matches a skill above, first call skill(name=\"<skill_name>\") to load its instructions, then follow those instructions to complete the task.")
+		lines = append(lines, "- Example: skill(name=\"git-commit\") loads the git-commit skill; use its rules to write the commit message.")
+	}
+	if len(agentSkills) > 0 {
+		lines = append(lines, "- Specialist agents: when a task requires expertise described above, call delegate(skill=\"<specialist_name>\", task=\"<concrete task description>\").")
+		lines = append(lines, "- Example: delegate(skill=\"researcher\", task=\"Find the latest Go release notes\") delegates the research step to the researcher specialist.")
+	}
+	lines = append(lines, "- Do not silently ignore available skills. Prefer using or delegating to a skill when one matches the user's request.")
+	return strings.Join(lines, "\n")
 }
 
 func escapeXML(s string) string {

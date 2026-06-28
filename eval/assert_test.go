@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/seanly/dmr-devkit/handoff"
@@ -224,8 +225,8 @@ func TestDimensionPassScore(t *testing.T) {
 }
 
 func TestRegisterCustomAssertion(t *testing.T) {
-	RegisterAssertion("always_true", func(_ []tape.TapeEntry, _ Assertion) (bool, error) {
-		return true, nil
+	RegisterAssertion("always_true", func(_ []tape.TapeEntry, _ Assertion) (bool, string, error) {
+		return true, "expected=true; actual=true", nil
 	})
 	r := &Rubric{
 		Name:      "custom",
@@ -244,5 +245,256 @@ func TestRegisterCustomAssertion(t *testing.T) {
 	}
 	if !card.Passed {
 		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestToolCallOrder(t *testing.T) {
+	r := &Rubric{
+		Name:      "order",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "order",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type:  "tool_call_order",
+				Names: []string{"fsGrep", "fsRead"},
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":       "c1",
+			"type":     "function",
+			"function": map[string]any{"name": "fsGrep", "arguments": "{}"},
+		}}),
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":       "c2",
+			"type":     "function",
+			"function": map[string]any{"name": "fsRead", "arguments": "{}"},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestToolArgsMatch(t *testing.T) {
+	r := &Rubric{
+		Name:      "args",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "args",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type:  "tool_args_match",
+				Name:  "fsGrep",
+				Key:   "pattern",
+				Value: "TODO",
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":   "c1",
+			"type": "function",
+			"function": map[string]any{
+				"name":      "fsGrep",
+				"arguments": `{"pattern":"TODO"}`,
+			},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestToolCallCount(t *testing.T) {
+	r := &Rubric{
+		Name:      "count",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "count",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type: "tool_call_count",
+				Name: "fsGrep",
+				Min:  1,
+				Max:  2,
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":       "c1",
+			"type":     "function",
+			"function": map[string]any{"name": "fsGrep", "arguments": "{}"},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestToolResultSuccess(t *testing.T) {
+	r := &Rubric{
+		Name:      "success",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "success",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type: "tool_result_success",
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolResultEntry([]any{"ok"}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestStateConstraintPriority(t *testing.T) {
+	st := handoff.NewState("Book tickets", "heuristic")
+	st.Constraints = map[string]string{"seat": "aisle", "budget": "low"}
+	r := &Rubric{
+		Name:      "priority",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "priority",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type:  "state_constraint_priority",
+				Names: []string{"seat", "budget"},
+			}},
+		}},
+	}
+	card, err := EvaluateTape([]tape.TapeEntry{tape.NewTaskStateEntry(st.ToPayload())}, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass: %+v", card)
+	}
+}
+
+func TestCompositeDimensionMin(t *testing.T) {
+	r := &Rubric{
+		Name:      "composite",
+		PassScore: 0.8,
+		Dimensions: []Dimension{{
+			ID:          "state",
+			Weight:      1,
+			Aggregation: "min",
+			SubDimensions: []Dimension{
+				{ID: "a", Weight: 1, Assertions: []Assertion{{Type: "tool_called", Name: "fsGrep"}}},
+				{ID: "b", Weight: 1, Assertions: []Assertion{{Type: "tool_called", Name: "shell"}}},
+			},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":       "c1",
+			"type":     "function",
+			"function": map[string]any{"name": "fsGrep", "arguments": "{}"},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Passed {
+		t.Fatalf("expected fail because min aggregation with one failing sub: %+v", card)
+	}
+	if card.Score != 0 {
+		t.Fatalf("expected score 0 for min aggregation: %+v", card)
+	}
+}
+
+func TestCompositeDimensionWeightedSum(t *testing.T) {
+	r := &Rubric{
+		Name:      "composite",
+		PassScore: 0.5,
+		Dimensions: []Dimension{{
+			ID:          "state",
+			Weight:      1,
+			Aggregation: "weighted_sum",
+			SubDimensions: []Dimension{
+				{ID: "a", Weight: 1, Assertions: []Assertion{{Type: "tool_called", Name: "fsGrep"}}},
+				{ID: "b", Weight: 1, Assertions: []Assertion{{Type: "tool_called", Name: "shell"}}},
+			},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":       "c1",
+			"type":     "function",
+			"function": map[string]any{"name": "fsGrep", "arguments": "{}"},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !card.Passed {
+		t.Fatalf("expected pass with weighted_sum score 0.5 >= pass_score 0.5: %+v", card)
+	}
+}
+
+func TestSuggestionForMissingTool(t *testing.T) {
+	r := &Rubric{
+		Name:      "suggest",
+		PassScore: 1,
+		Dimensions: []Dimension{{
+			ID:     "tools",
+			Weight: 1,
+			Assertions: []Assertion{{
+				Type:    "tool_called",
+				Name:    "fs_grep",
+				Because: "must search before reading",
+			}},
+		}},
+	}
+	entries := []tape.TapeEntry{
+		tape.NewToolCallEntry([]map[string]any{{
+			"id":       "c1",
+			"type":     "function",
+			"function": map[string]any{"name": "fsGrep", "arguments": "{}"},
+		}}),
+	}
+	card, err := EvaluateTape(entries, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Passed {
+		t.Fatalf("expected fail: %+v", card)
+	}
+	found := false
+	for _, dr := range card.Results {
+		for _, ar := range dr.AssertionResults {
+			if strings.Contains(ar.Suggestion, "Did you mean") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected similarity suggestion: %+v", card.Results)
 	}
 }

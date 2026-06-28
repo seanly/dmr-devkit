@@ -2,7 +2,6 @@ package skill
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -334,14 +333,13 @@ func (m *Manager) delegateTool() *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
 			Name:        "delegate",
-			Description: "Delegate a task to a specialist skill agent. Available specialists: " + strings.Join(m.agentSkillNames(), ", ") + ".",
+			Description: "Delegate a task to a specialist skill agent. Available specialists: " + strings.Join(m.agentSkillNames(), ", ") + ". The skill name is validated at runtime, so newly created skills are usable immediately.",
 			Group:       m.toolGroup,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"skill": map[string]any{
 						"type":        "string",
-						"enum":        m.agentSkillNames(),
 						"description": "Agent skill name to delegate to",
 					},
 					"task": map[string]any{
@@ -426,14 +424,10 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 		return map[string]any{"success": false, "error": "invalid runtime agent"}, nil
 	}
 
-	// Build contextJSON: inject skill body as system prompt override
-	var contextJSON string
-	if strings.TrimSpace(sk.Content) != "" {
-		b, _ := json.Marshal(map[string]any{
-			"system_prompt_override": sk.Content,
-		})
-		contextJSON = string(b)
-	}
+	// Build a rich context string that preserves the parent task context and
+	// clearly marks the skill instructions. This is injected as a system message
+	// on the child tape so the sub-agent knows its role and constraints.
+	contextJSON := buildSkillDelegationContext(ctx, sk, task)
 
 	maxSteps := sk.MaxIterations
 	if maxSteps == 0 {
@@ -473,3 +467,40 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 	return out, nil
 }
 
+// buildSkillDelegationContext produces the context payload passed to the sub-agent.
+// It includes the parent task context and the skill instructions so the specialist
+// has enough background to produce useful output without losing the parent agent's
+// intent.
+func buildSkillDelegationContext(ctx *tool.ToolContext, sk *Skill, task string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are the **%s** specialist sub-agent, invoked via `delegate(skill=%q, task=...)`.\n\n", sk.Name, sk.Name)
+
+	fmt.Fprintf(&b, "**Parent task:** %s\n", task)
+	if ctx != nil {
+		if ctx.Tape != "" {
+			fmt.Fprintf(&b, "**Parent tape:** %s\n", ctx.Tape)
+		}
+		if ws := ctx.GetCwd(); ws != "" {
+			fmt.Fprintf(&b, "**Workspace:** %s\n", ws)
+		}
+	}
+	if sk.Description != "" {
+		fmt.Fprintf(&b, "**Your role:** %s\n", sk.Description)
+	}
+	if sk.WhenToUse != "" {
+		fmt.Fprintf(&b, "**When to use you:** %s\n", sk.WhenToUse)
+	}
+	if len(sk.ToolAllowlist) > 0 {
+		fmt.Fprintf(&b, "**Allowed tools:** %s\n", strings.Join(sk.ToolAllowlist, ", "))
+	}
+
+	b.WriteString("\n## Skill Instructions\n")
+	b.WriteString("Follow these instructions precisely. Do not deviate unless the parent task explicitly requires it.\n\n")
+	b.WriteString(sk.Content)
+	b.WriteString("\n\n## Response Guidelines\n")
+	b.WriteString("- Focus only on the delegated task.\n")
+	b.WriteString("- Return concise, actionable output that the parent agent can use.\n")
+	b.WriteString("- If you cannot complete the task, explain what blocked you and what the parent agent should do next.\n")
+
+	return b.String()
+}

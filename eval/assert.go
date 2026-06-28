@@ -2,7 +2,9 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,7 +14,8 @@ import (
 )
 
 // AssertionFunc evaluates a single assertion against tape entries.
-type AssertionFunc func(entries []tape.TapeEntry, a Assertion) (bool, error)
+// The returned string is a human-readable detail (expected vs actual) for diagnostics.
+type AssertionFunc func(entries []tape.TapeEntry, a Assertion) (bool, string, error)
 
 var assertionRegistry = map[string]AssertionFunc{}
 
@@ -31,6 +34,13 @@ func init() {
 	RegisterAssertion("anchor_exists", assertAnchorExists)
 	RegisterAssertion("loop_event", assertLoopEvent)
 	RegisterAssertion("tape_must_not_match", assertTapeMustNotMatch)
+	RegisterAssertion("tool_call_order", assertToolCallOrder)
+	RegisterAssertion("tool_args_match", assertToolArgsMatch)
+	RegisterAssertion("tool_result_success", assertToolResultSuccess)
+	RegisterAssertion("tool_call_count", assertToolCallCount)
+	RegisterAssertion("context_key_preserved", assertContextKeyPreserved)
+	RegisterAssertion("state_constraint_priority", assertStateConstraintPriority)
+	RegisterAssertion("event_order", assertEventOrder)
 }
 
 // EvaluateTape runs deterministic assertions in rubric against tape entries.
@@ -88,6 +98,11 @@ func EvaluateTapeWithOptions(ctx context.Context, entries []tape.TapeEntry, rubr
 func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dimension, opts *Options, weight float64) (DimensionResult, error) {
 	res := DimensionResult{ID: dim.ID, Weight: weight}
 
+	// Composite dimension: recurse into sub_dimensions.
+	if len(dim.SubDimensions) > 0 {
+		return evalCompositeDimension(ctx, entries, dim, opts, weight)
+	}
+
 	if dim.Judge != nil && len(dim.Assertions) == 0 {
 		if opts == nil || opts.Judge == nil {
 			res.Skipped = true
@@ -107,12 +122,13 @@ func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dime
 		return res, nil
 	}
 
-	score, detail, err := evalDimension(entries, dim)
+	score, detail, assertionResults, err := evalDimension(entries, dim)
 	if err != nil {
 		return res, err
 	}
 	res.Score = score
 	res.Passed = score >= dimensionPassScore(dim)
+	res.AssertionResults = assertionResults
 
 	if dim.Judge != nil {
 		if opts == nil || opts.Judge == nil {
@@ -134,6 +150,70 @@ func evalDimensionResult(ctx context.Context, entries []tape.TapeEntry, dim Dime
 	}
 
 	res.Detail = detail
+	return res, nil
+}
+
+func evalCompositeDimension(ctx context.Context, entries []tape.TapeEntry, dim Dimension, opts *Options, weight float64) (DimensionResult, error) {
+	res := DimensionResult{ID: dim.ID, Weight: weight}
+	var subResults []DimensionResult
+	var weighted float64
+	var totalWeight float64
+	anyFailed := false
+	var minScore float64 = 1
+
+	for _, sub := range dim.SubDimensions {
+		sw := sub.Weight
+		if sw <= 0 {
+			sw = 1
+		}
+		subRes, err := evalDimensionResult(ctx, entries, sub, opts, sw)
+		if err != nil {
+			return res, err
+		}
+		subResults = append(subResults, subRes)
+		if subRes.Skipped {
+			continue
+		}
+		weighted += subRes.Score * sw
+		totalWeight += sw
+		if !subRes.Passed {
+			anyFailed = true
+		}
+		if subRes.Score < minScore {
+			minScore = subRes.Score
+		}
+	}
+
+	res.SubResults = subResults
+	agg := strings.ToLower(strings.TrimSpace(dim.Aggregation))
+
+	switch agg {
+	case "min":
+		res.Score = minScore
+		res.Detail = fmt.Sprintf("composite(min): min score=%.2f", minScore)
+	case "cap_by_worst":
+		if totalWeight > 0 {
+			res.Score = weighted / totalWeight
+		} else if len(subResults) > 0 {
+			res.Score = 1
+		}
+		if anyFailed && minScore < res.Score {
+			res.Score = minScore
+		}
+		res.Detail = fmt.Sprintf("composite(cap_by_worst): score=%.2f", res.Score)
+	default: // weighted_sum
+		if totalWeight > 0 {
+			res.Score = weighted / totalWeight
+		} else if len(subResults) > 0 {
+			res.Score = 1
+		}
+		res.Detail = fmt.Sprintf("composite(weighted_sum): score=%.2f", res.Score)
+	}
+
+	res.Passed = res.Score >= dimensionPassScore(dim)
+	if agg == "cap_by_worst" && anyFailed {
+		res.Passed = false
+	}
 	return res, nil
 }
 
@@ -175,106 +255,232 @@ func normalizeJudgeScore(score float64, spec *JudgeSpec) float64 {
 	return score
 }
 
-func evalDimension(entries []tape.TapeEntry, dim Dimension) (float64, string, error) {
+func evalDimension(entries []tape.TapeEntry, dim Dimension) (float64, string, []AssertionResult, error) {
 	if len(dim.Assertions) == 0 {
 		if dim.Judge != nil {
-			return 0, "judge pending", nil
+			return 0, "judge pending", nil, nil
 		}
-		return 1, "no assertions", nil
+		return 1, "no assertions", nil, nil
 	}
 	passed := 0
+	var results []AssertionResult
 	for _, a := range dim.Assertions {
-		ok, err := evalAssertion(entries, a)
+		ok, detail, err := evalAssertion(entries, a)
 		if err != nil {
-			return 0, "", err
+			return 0, "", nil, err
 		}
 		if ok {
 			passed++
 		}
+		results = append(results, buildAssertionResult(a, ok, detail, entries))
 	}
 	score := float64(passed) / float64(len(dim.Assertions))
-	return score, fmt.Sprintf("%d/%d assertions passed", passed, len(dim.Assertions)), nil
+	return score, fmt.Sprintf("%d/%d assertions passed", passed, len(dim.Assertions)), results, nil
 }
 
-func evalAssertion(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func evalAssertion(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	if len(a.AnyOf) > 0 {
 		for _, sub := range a.AnyOf {
-			ok, err := evalAssertion(entries, sub)
+			ok, detail, err := evalAssertion(entries, sub)
 			if err != nil {
-				return false, err
+				return false, "", err
 			}
 			if ok {
-				return !a.Negate, nil
+				return !a.Negate, detail, nil
 			}
 		}
-		return a.Negate, nil
+		return a.Negate, "", nil
 	}
 
 	fn, ok := assertionRegistry[a.Type]
 	if !ok {
-		return false, fmt.Errorf("unknown assertion type %q", a.Type)
+		return false, "", fmt.Errorf("unknown assertion type %q", a.Type)
 	}
-	result, err := fn(entries, a)
+	result, detail, err := fn(entries, a)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if a.Negate {
-		return !result, nil
+		return !result, detail, nil
 	}
-	return result, nil
+	return result, detail, nil
+}
+
+func buildAssertionResult(a Assertion, ok bool, detail string, entries []tape.TapeEntry) AssertionResult {
+	ar := AssertionResult{
+		Type:    a.Type,
+		Passed:  ok,
+		Because: a.Because,
+	}
+	if detail != "" {
+		parts := strings.SplitN(detail, "; actual=", 2)
+		if len(parts) == 2 {
+			ar.Expected = strings.TrimPrefix(parts[0], "expected=")
+			ar.Actual = parts[1]
+		} else {
+			ar.Expected = detail
+		}
+	}
+	if !ok {
+		ar.Suggestion = suggestForAssertion(a, entries)
+	}
+	return ar
+}
+
+func suggestForAssertion(a Assertion, entries []tape.TapeEntry) string {
+	switch a.Type {
+	case "tool_called":
+		if totalToolCalls(entries) == 0 {
+			return "检查 prompt 是否清晰请求工具使用"
+		}
+		if sim := findSimilarToolName(entries, a.Name); sim != "" {
+			return fmt.Sprintf("Did you mean: %s?", sim)
+		}
+	case "tool_not_called":
+		if sim := findSimilarToolName(entries, a.Name); sim != "" {
+			return fmt.Sprintf("Did you mean: %s?", sim)
+		}
+	case "tool_call_count":
+		count := countToolCalls(entries, a.Name)
+		if a.Max > 0 && count > a.Max {
+			if a.Name == "shell" {
+				return suggestShellBatching(entries, count, a.Max)
+			}
+			return fmt.Sprintf("reduce %s calls from %d to <= %d; consider batching", a.Name, count, a.Max)
+		}
+	case "tool_call_order":
+		return fmt.Sprintf("expected order %v; actual order %v", a.Names, toolCallNames(entries))
+	}
+	return "run `dmr eval diagnose` for rule-based suggestions"
+}
+
+func suggestShellBatching(entries []tape.TapeEntry, count, max int) string {
+	cmdCounts := make(map[string]int)
+	for _, e := range entries {
+		if e.Kind != "tool_call" {
+			continue
+		}
+		calls, ok := tape.ExtractToolCalls(e.Payload)
+		if !ok {
+			continue
+		}
+		for _, c := range calls {
+			if c.Name != "shell" {
+				continue
+			}
+			args := map[string]any{}
+			_ = json.Unmarshal([]byte(c.Arguments), &args)
+			cmd, _ := args["cmd"].(string)
+			prefix := shellCommandPrefix(cmd)
+			cmdCounts[prefix]++
+		}
+	}
+	var topPrefix string
+	topN := 0
+	for p, n := range cmdCounts {
+		if n > topN {
+			topN = n
+			topPrefix = p
+		}
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "episode 包含 %d 次 shell 调用（超过阈值 %d）", count, max)
+	if topPrefix != "" && topN > 1 {
+		fmt.Fprintf(&sb, "；其中 %d 次是 `%s ...`，建议合并为批量命令或脚本", topN, topPrefix)
+	}
+	fmt.Fprint(&sb, "；用户拒绝后应避免立即重试")
+	return sb.String()
+}
+
+func shellCommandPrefix(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return ""
+	}
+	// Take first token or first two for "kubectl <verb>"
+	fields := strings.Fields(cmd)
+	if len(fields) >= 2 && fields[0] == "kubectl" {
+		return "kubectl " + fields[1]
+	}
+	if len(fields) >= 1 {
+		return fields[0]
+	}
+	return cmd
 }
 
 // Built-in assertions
 
-func assertTaskStateFieldPresent(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func assertTaskStateFieldPresent(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	st := handoff.LatestState(entries)
 	if st == nil {
-		return false, nil
+		return false, "expected=task_state present; actual=no task_state entries", nil
 	}
 	switch a.Field {
 	case "goal":
-		return st.Goal != "", nil
+		if st.Goal != "" {
+			return true, fmt.Sprintf("expected=goal present; actual=%s", st.Goal), nil
+		}
+		return false, "expected=goal present; actual=empty", nil
 	default:
-		return false, fmt.Errorf("unknown task_state field %q", a.Field)
+		return false, "", fmt.Errorf("unknown task_state field %q", a.Field)
 	}
 }
 
-func assertTaskStateConstraint(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func assertTaskStateConstraint(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	st := handoff.LatestState(entries)
 	if st == nil || st.Constraints == nil {
-		return false, nil
+		return false, fmt.Sprintf("expected=constraint %s=%s; actual=no constraints", a.Key, a.Value), nil
 	}
 	v, ok := st.Constraints[a.Key]
-	return ok && v == a.Value, nil
+	if !ok {
+		return false, fmt.Sprintf("expected=constraint %s=%s; actual=key missing", a.Key, a.Value), nil
+	}
+	if v == a.Value {
+		return true, fmt.Sprintf("expected=constraint %s=%s; actual=%s", a.Key, a.Value, v), nil
+	}
+	return false, fmt.Sprintf("expected=constraint %s=%s; actual=%s", a.Key, a.Value, v), nil
 }
 
-func assertToolCalled(entries []tape.TapeEntry, a Assertion) (bool, error) {
-	return countToolCalls(entries, a.Name) >= max1(a.Min), nil
+func assertToolCalled(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	count := countToolCalls(entries, a.Name)
+	min := max1(a.Min)
+	if count >= min {
+		return true, fmt.Sprintf("expected=tool %s called >=%d; actual=%d", a.Name, min, count), nil
+	}
+	return false, fmt.Sprintf("expected=tool %s called >=%d; actual=%d", a.Name, min, count), nil
 }
 
-func assertToolNotCalled(entries []tape.TapeEntry, a Assertion) (bool, error) {
-	return countToolCalls(entries, a.Name) == 0, nil
+func assertToolNotCalled(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	count := countToolCalls(entries, a.Name)
+	if count == 0 {
+		return true, fmt.Sprintf("expected=tool %s not called; actual=0", a.Name), nil
+	}
+	return false, fmt.Sprintf("expected=tool %s not called; actual=%d", a.Name, count), nil
 }
 
-func assertTapeEntryKind(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func assertTapeEntryKind(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	n := countKind(entries, a.Name)
-	return n >= max1(a.Min), nil
+	min := max1(a.Min)
+	if n >= min {
+		return true, fmt.Sprintf("expected=kind %s count >=%d; actual=%d", a.Name, min, n), nil
+	}
+	return false, fmt.Sprintf("expected=kind %s count >=%d; actual=%d", a.Name, min, n), nil
 }
 
-func assertAnchorExists(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func assertAnchorExists(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	for _, e := range entries {
 		if e.Kind != "anchor" {
 			continue
 		}
 		name, _ := e.Payload["name"].(string)
 		if name == a.Name {
-			return true, nil
+			return true, fmt.Sprintf("expected=anchor %s; actual=found", a.Name), nil
 		}
 	}
-	return false, nil
+	return false, fmt.Sprintf("expected=anchor %s; actual=missing", a.Name), nil
 }
 
-func assertLoopEvent(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func assertLoopEvent(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	for _, e := range entries {
 		if e.Kind != "event" {
 			continue
@@ -285,19 +491,19 @@ func assertLoopEvent(entries []tape.TapeEntry, a Assertion) (bool, error) {
 		}
 		data, _ := e.Payload["data"].(map[string]any)
 		if a.Field == "" {
-			return true, nil
+			return true, fmt.Sprintf("expected=event %s; actual=found", a.Name), nil
 		}
 		if matchEventField(data[a.Field], a.Value) {
-			return true, nil
+			return true, fmt.Sprintf("expected=event %s %s=%s; actual=found", a.Name, a.Field, a.Value), nil
 		}
 	}
-	return false, nil
+	return false, fmt.Sprintf("expected=event %s %s=%s; actual=missing", a.Name, a.Field, a.Value), nil
 }
 
-func assertTapeMustNotMatch(entries []tape.TapeEntry, a Assertion) (bool, error) {
+func assertTapeMustNotMatch(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	re, err := regexp.Compile(a.Regex)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	for _, e := range entries {
 		if e.Kind != "message" {
@@ -309,10 +515,225 @@ func assertTapeMustNotMatch(entries []tape.TapeEntry, a Assertion) (bool, error)
 		}
 		content, _ := e.Payload["content"].(string)
 		if re.MatchString(content) {
-			return false, nil
+			return false, fmt.Sprintf("expected=no match for %s; actual=matched", a.Regex), nil
 		}
 	}
-	return true, nil
+	return true, fmt.Sprintf("expected=no match for %s; actual=no match", a.Regex), nil
+}
+
+func assertToolCallOrder(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	expected := a.Names
+	if len(expected) == 0 {
+		return false, "", fmt.Errorf("tool_call_order requires names")
+	}
+	actual := toolCallNames(entries)
+	ok := subsequence(expected, actual)
+	if a.Negate {
+		// Negate handled by caller; here return raw result.
+		return ok, fmt.Sprintf("expected=order %v; actual=%v", expected, actual), nil
+	}
+	if ok {
+		return true, fmt.Sprintf("expected=order %v; actual=%v", expected, actual), nil
+	}
+	return false, fmt.Sprintf("expected=order %v; actual=%v", expected, actual), nil
+}
+
+func assertToolArgsMatch(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	if a.Name == "" {
+		return false, "", fmt.Errorf("tool_args_match requires name")
+	}
+	calls := collectToolCalls(entries, a.Name)
+	if len(calls) == 0 {
+		return false, fmt.Sprintf("expected=%s args match; actual=not called", a.Name), nil
+	}
+	for _, c := range calls {
+		args := map[string]any{}
+		_ = json.Unmarshal([]byte(c.Arguments), &args)
+		if a.Key == "" {
+			if c.Arguments == a.Value {
+				return true, fmt.Sprintf("expected=%s args=%s; actual=%s", a.Name, a.Value, c.Arguments), nil
+			}
+			continue
+		}
+		got, ok := args[a.Key]
+		if !ok {
+			continue
+		}
+		if fmt.Sprint(got) == a.Value {
+			return true, fmt.Sprintf("expected=%s.%s=%s; actual=%v", a.Name, a.Key, a.Value, got), nil
+		}
+	}
+	return false, fmt.Sprintf("expected=%s.%s=%s; actual=no matching call", a.Name, a.Key, a.Value), nil
+}
+
+func assertToolResultSuccess(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	var failures []string
+	for _, e := range entries {
+		if e.Kind != "tool_result" {
+			continue
+		}
+		results, ok := tape.ExtractToolResults(e.Payload)
+		if !ok {
+			continue
+		}
+		for i, r := range results {
+			if a.Name != "" {
+				// Try to associate result with a preceding tool_call by index.
+				callName := toolCallNameForResult(entries, e.ID, i)
+				if callName != a.Name {
+					continue
+				}
+			}
+			if looksLikeError(r.Content) {
+				failures = append(failures, r.Content)
+			}
+		}
+	}
+	if len(failures) == 0 {
+		return true, "expected=all tool results succeed; actual=all succeed", nil
+	}
+	return false, fmt.Sprintf("expected=all tool results succeed; actual=%d failures", len(failures)), nil
+}
+
+func toolCallNameForResult(entries []tape.TapeEntry, resultID, resultIndex int) string {
+	for _, e := range entries {
+		if e.Kind != "tool_call" {
+			continue
+		}
+		calls, ok := tape.ExtractToolCalls(e.Payload)
+		if !ok {
+			continue
+		}
+		for _, c := range calls {
+			if c.ID == "" {
+				continue
+			}
+			if c.ID == strconv.Itoa(resultID) {
+				return c.Name
+			}
+		}
+	}
+	return ""
+}
+
+func assertToolCallCount(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	if a.Name == "" {
+		return false, "", fmt.Errorf("tool_call_count requires name")
+	}
+	count := countToolCalls(entries, a.Name)
+	min := a.Min
+	max := a.Max
+	if min < 0 && max <= 0 {
+		min = 1
+	}
+	if count >= min && (max <= 0 || count <= max) {
+		return true, fmt.Sprintf("expected=%s count in [%d,%d]; actual=%d", a.Name, min, max, count), nil
+	}
+	return false, fmt.Sprintf("expected=%s count in [%d,%d]; actual=%d", a.Name, min, max, count), nil
+}
+
+func assertEventOrder(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	expected := a.Names
+	if len(expected) == 0 {
+		return false, "", fmt.Errorf("event_order requires names")
+	}
+	actual := eventNames(entries)
+	ok := subsequence(expected, actual)
+	if ok {
+		return true, fmt.Sprintf("expected=event order %v; actual=%v", expected, actual), nil
+	}
+	return false, fmt.Sprintf("expected=event order %v; actual=%v", expected, actual), nil
+}
+
+func eventNames(entries []tape.TapeEntry) []string {
+	var names []string
+	for _, e := range entries {
+		if e.Kind != "event" {
+			continue
+		}
+		name, _ := e.Payload["name"].(string)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func assertContextKeyPreserved(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	// Look at the last compact_summary and latest task_state for the key/value.
+	var summary string
+	for _, e := range entries {
+		if e.Kind == "compact_summary" {
+			content, _ := e.Payload["content"].(string)
+			summary = content
+		}
+	}
+	st := handoff.LatestState(entries)
+	present := false
+	if st != nil && st.Constraints != nil {
+		if v, ok := st.Constraints[a.Key]; ok && v == a.Value {
+			present = true
+		}
+	}
+	if summary != "" && a.Key != "" {
+		if strings.Contains(summary, a.Key) {
+			present = true
+		}
+	}
+	if present {
+		return true, fmt.Sprintf("expected=%s=%s preserved; actual=preserved", a.Key, a.Value), nil
+	}
+	return false, fmt.Sprintf("expected=%s=%s preserved; actual=missing", a.Key, a.Value), nil
+}
+
+func assertStateConstraintPriority(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
+	expected := a.Names
+	if len(expected) == 0 {
+		return false, "", fmt.Errorf("state_constraint_priority requires names")
+	}
+	// Walk all task_state entries in tape order; for each expected key, the final
+	// state's value should match the last value observed (latest instruction wins).
+	latest := latestConstraintValues(entries)
+	st := handoff.LatestState(entries)
+	if st == nil || st.Constraints == nil {
+		return false, fmt.Sprintf("expected=priority %v; actual=no constraints", expected), nil
+	}
+	for _, key := range expected {
+		want, ok := latest[key]
+		if !ok {
+			return false, fmt.Sprintf("expected=priority key %s; actual=never set", key), nil
+		}
+		got, ok := st.Constraints[key]
+		if !ok {
+			return false, fmt.Sprintf("expected=priority key %s; actual=missing in final state", key), nil
+		}
+		if got != want {
+			return false, fmt.Sprintf("expected=priority key %s=%s; actual=%s", key, want, got), nil
+		}
+	}
+	return true, fmt.Sprintf("expected=priority %v; actual=final state matches latest values", expected), nil
+}
+
+func latestConstraintValues(entries []tape.TapeEntry) map[string]string {
+	latest := map[string]string{}
+	for _, e := range entries {
+		if e.Kind != "task_state" {
+			continue
+		}
+		st, err := handoff.StateFromPayload(e.Payload)
+		if err != nil || st == nil || st.Constraints == nil {
+			continue
+		}
+		for k, v := range st.Constraints {
+			latest[k] = v
+		}
+	}
+	return latest
+}
+
+func looksLikeError(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "error") || strings.Contains(s, "failed") || strings.Contains(s, "exception")
 }
 
 func matchEventField(got any, want string) bool {
@@ -372,6 +793,120 @@ func countToolCalls(entries []tape.TapeEntry, name string) int {
 	return n
 }
 
+func collectToolCalls(entries []tape.TapeEntry, name string) []tape.ToolCallData {
+	var out []tape.ToolCallData
+	for _, e := range entries {
+		if e.Kind != "tool_call" {
+			continue
+		}
+		calls, ok := tape.ExtractToolCalls(e.Payload)
+		if !ok {
+			continue
+		}
+		for _, c := range calls {
+			if name == "" || c.Name == name {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+func toolCallNames(entries []tape.TapeEntry) []string {
+	var names []string
+	for _, e := range entries {
+		if e.Kind != "tool_call" {
+			continue
+		}
+		calls, ok := tape.ExtractToolCalls(e.Payload)
+		if !ok {
+			continue
+		}
+		for _, c := range calls {
+			names = append(names, c.Name)
+		}
+	}
+	return names
+}
+
+func totalToolCalls(entries []tape.TapeEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.Kind != "tool_call" {
+			continue
+		}
+		calls, ok := tape.ExtractToolCalls(e.Payload)
+		if !ok {
+			continue
+		}
+		n += len(calls)
+	}
+	return n
+}
+
+func findSimilarToolName(entries []tape.TapeEntry, target string) string {
+	if target == "" {
+		return ""
+	}
+	names := make(map[string]struct{})
+	for _, n := range toolCallNames(entries) {
+		names[n] = struct{}{}
+	}
+	var best string
+	bestDist := math.MaxInt
+	for n := range names {
+		d := levenshtein(target, n)
+		if d < bestDist && d <= 3 && d > 0 {
+			bestDist = d
+			best = n
+		}
+	}
+	return best
+}
+
+func levenshtein(a, b string) int {
+	la, lb := len(a), len(b)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			curr[j] = min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
+}
+
+func subsequence(needle, haystack []string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	i := 0
+	for _, h := range haystack {
+		if h == needle[i] {
+			i++
+			if i == len(needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // FormatScoreCard returns a human-readable summary.
 func FormatScoreCard(card *ScoreCard) string {
 	if card == nil {
@@ -393,6 +928,24 @@ func FormatScoreCard(card *ScoreCard) string {
 			fmt.Fprintf(&b, " [tokens=%d cost=%.4f]", r.JudgeMeta.Tokens, r.JudgeMeta.Cost)
 		}
 		fmt.Fprintln(&b)
+		for _, ar := range r.AssertionResults {
+			if ar.Passed {
+				continue
+			}
+			fmt.Fprintf(&b, "      assertion %s: expected=%q actual=%q", ar.Type, ar.Expected, ar.Actual)
+			if ar.Because != "" {
+				fmt.Fprintf(&b, " because=%q", ar.Because)
+			}
+			if ar.Suggestion != "" {
+				fmt.Fprintf(&b, " suggestion=%q", ar.Suggestion)
+			}
+			fmt.Fprintln(&b)
+		}
+	}
+	if card.Statistics != nil {
+		s := card.Statistics
+		fmt.Fprintf(&b, "  statistics: runs=%d success_rate=%.2f mean=%.2f stddev=%.2f min=%.2f max=%.2f\n",
+			s.Runs, s.SuccessRate, s.Mean, s.StdDev, s.Min, s.Max)
 	}
 	return b.String()
 }
