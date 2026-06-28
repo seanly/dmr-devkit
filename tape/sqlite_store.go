@@ -51,11 +51,22 @@ func NewSQLiteTapeStoreWithDriver(dbPath, driver string, config SQLiteStoreConfi
 
 	dsn := dbPath
 	if driver == SQLDriverModernc {
-		dsn = dbPath + "?_journal_mode=WAL&_busy_timeout=5000"
+		// Keep a single SQLite connection to serialize writes and avoid
+		// SQLITE_BUSY caused by concurrent writers from the same process.
+		// A generous busy timeout handles transient contention from other processes.
+		dsn = dbPath + "?_journal_mode=WAL&_busy_timeout=30000"
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", driver, err)
+	}
+
+	// Serialize all SQLite access through one connection. SQLite only allows one
+	 // writer at a time even in WAL mode; pooling multiple connections makes
+	 // SQLITE_BUSY likely when goroutines append concurrently.
+	if driver == SQLDriverModernc {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
 	}
 
 	store := &SQLiteTapeStore{
@@ -313,10 +324,25 @@ func (s *SQLiteTapeStore) Append(tape string, entry TapeEntry) error {
 		metaJSON = []byte("{}")
 	}
 
-	result, err := s.db.Exec(
-		"INSERT INTO entries (tape, kind, payload, meta, date) VALUES (?, ?, ?, ?, ?)",
-		tape, entry.Kind, string(payloadJSON), string(metaJSON), entry.Date,
-	)
+	const maxRetries = 5
+	var result sql.Result
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			// Exponential backoff: 20ms, 40ms, 80ms, 160ms
+			time.Sleep(time.Duration(1<<(i-1)) * 20 * time.Millisecond)
+		}
+		result, err = s.db.Exec(
+			"INSERT INTO entries (tape, kind, payload, meta, date) VALUES (?, ?, ?, ?, ?)",
+			tape, entry.Kind, string(payloadJSON), string(metaJSON), entry.Date,
+		)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "database is locked") {
+			return fmt.Errorf("insert entry: %w", err)
+		}
+		slog.Debug("sqlite tape: insert busy, retrying", "attempt", i+1, "error", err)
+	}
 	if err != nil {
 		return fmt.Errorf("insert entry: %w", err)
 	}
