@@ -85,7 +85,7 @@ Before mutating state (permissions, secrets, credentials, infrastructure or poli
 
 ## Which tools exist
 
-Tools are **registered by the host application** at build time (`devkit.Options.Tools` or equivalent). **`toolSearch` is always available** for deferred discovery. **Do not assume** a tool name is callable until it appears in your tool list or `toolSearch` loads it.
+Tools are **registered by the host application** at build time (`devkit.Options.Tools` or equivalent). **`toolSearch` and `handoff` are always available** as agent built-ins. `toolSearch` is for deferred discovery; `handoff` is for focused context compaction. **Do not assume** a tool name is callable until it appears in your tool list or `toolSearch` loads it.
 
 **Core tools** — Loaded immediately (group `core`, or `alwaysLoad`). Typical examples when the host provides them: file read/write/edit, shell, domain-specific handlers.
 
@@ -94,6 +94,10 @@ Tools are **registered by the host application** at build time (`devkit.Options.
 **CRITICAL:** When a dedicated tool exists for a task, use it instead of a generic shell command. Dedicated tools produce clearer, reviewable results.
 
 When a conclusion or next step depends on **whether** something is true in the repo, environment, or web—**use an appropriate registered tool first** (see **Evidence before acting**). Do not substitute untested recall or plausible inference for a quick factual check.
+
+## Built-in tools
+
+`toolSearch` discovers deferred extended tools when they are registered. `handoff` creates a focused context checkpoint on the current tape. Detailed usage guidance is included in each tool's description.
 
 ## When to Use toolSearch
 

@@ -89,6 +89,11 @@ type Agent struct {
 	// Precomputed sorted prompt bases and tape models for fast lookup
 	precomputedPromptBases []struct{ pattern, prompt string }
 	precomputedTapeModels  []struct{ pattern, model string }
+
+	// builtinTools are the devkit-injected tools (toolSearch, handoff, etc.) that
+	// are always available to the agent loop and may also be exposed to the host
+	// for comma/slash command dispatch.
+	builtinTools []*tool.Tool
 }
 
 // SetTapeControl injects the TapeControl dependency.
@@ -145,9 +150,20 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 	if len(a.config.Tools) > 0 {
 		builtinTools = append(builtinTools, a.config.Tools...)
 	}
+	a.builtinTools = builtinTools[:2]
 	a.config.Tools = builtinTools
 
 	return a
+}
+
+// BuiltinTools returns the devkit-injected built-in tools (e.g. toolSearch, handoff).
+// These are always loaded and may be exposed to the host for slash/comma command dispatch.
+func (a *Agent) BuiltinTools() []*tool.Tool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]*tool.Tool, len(a.builtinTools))
+	copy(out, a.builtinTools)
+	return out
 }
 
 // SetOnToolCall sets the callback for tool call display.
