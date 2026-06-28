@@ -123,12 +123,11 @@ func TestStructuredCompactPrompt(t *testing.T) {
 	prompt := structuredCompactPrompt
 
 	requiredElements := []string{
-		"<analysis>",
-		"</analysis>",
 		"<summary>",
 		"</summary>",
 		"CRITICAL: Respond with TEXT ONLY",
 		"Do NOT call any tools",
+		"Do NOT output <analysis> tags",
 		"Primary Request and Intent",
 		"Key Technical Concepts",
 		"Files and Code Sections",
@@ -140,9 +139,20 @@ func TestStructuredCompactPrompt(t *testing.T) {
 		"Optional Next Step",
 	}
 
+	forbiddenPatterns := []string{
+		"wrap your analysis in <analysis>",
+		"<analysis>\n[Your thought process",
+	}
+
 	for _, element := range requiredElements {
 		if !strings.Contains(prompt, element) {
 			t.Errorf("Prompt missing required element: %s", element)
+		}
+	}
+
+	for _, pattern := range forbiddenPatterns {
+		if strings.Contains(prompt, pattern) {
+			t.Errorf("Prompt should not ask model to output an analysis section: %s", pattern)
 		}
 	}
 }

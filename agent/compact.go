@@ -152,7 +152,7 @@ func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages
 		rawResp, err := a.defaultChat.Chat(ctx, client.ChatOpts{
 			Prompt:       flattenedContent + "\n\n=== 总结任务 ===\n\n" + prompt,
 			Messages:     nil, // No messages array, everything is in Prompt
-			SystemPrompt: "You are a professional conversation summarizer. Your task is to generate detailed, accurate, structured conversation summaries that preserve all critical technical information. Output only the summary content without any explanations or prefixes.",
+			SystemPrompt: "You are a professional conversation summarizer. Your task is to generate detailed, accurate, structured conversation summaries that preserve all critical technical information. Output only the content inside the <summary> tags. Do not include <analysis> tags, markdown fences, or any explanations outside the summary.",
 			MaxTokens:    3000,
 		})
 		if err != nil {
@@ -160,8 +160,8 @@ func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages
 		}
 
 		// Extract summary from the response
-		// The model should output <analysis>...</analysis> and <summary>...</summary>
-		// We extract only the <summary> part for storage
+		// The model should output the content wrapped in <summary>...</summary> tags.
+		// We extract only the <summary> part for storage.
 		summary := extractSummaryTag(rawResp)
 
 		// If no summary tag was found, use the raw response (fallback)
