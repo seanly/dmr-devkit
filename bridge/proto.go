@@ -35,6 +35,7 @@ type ToolDef struct {
 	Group          string `json:"group,omitempty"`
 	SearchHint     string `json:"search_hint,omitempty"`
 	AlwaysLoad     bool   `json:"always_load,omitempty"`
+	MaxResultChars int    `json:"max_result_chars,omitempty"`
 	Route          Route  `json:"route"`
 }
 
@@ -51,7 +52,7 @@ type Frame struct {
 	Hostname  string            `json:"hostname,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	Executors []string          `json:"executors,omitempty"`
-	Tools     []ToolDef         `json:"tools,omitempty"` // deprecated: v1 worker catalog sync
+	Tools     []ToolDef         `json:"tools,omitempty"` // v2 worker catalog sync: full ToolDef list
 	Workspace string            `json:"workspace,omitempty"`
 	Rev       int64             `json:"rev,omitempty"`
 

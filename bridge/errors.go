@@ -19,9 +19,9 @@ type WorkerOfflineError struct {
 
 func (e *WorkerOfflineError) Error() string {
 	if e.WorkerID != "" {
-		return fmt.Sprintf("worker %q is offline; start `dmr worker` locally", e.WorkerID)
+		return fmt.Sprintf("worker %q is offline; start `dmr forge worker` locally", e.WorkerID)
 	}
-	return "worker is offline; start `dmr worker` locally"
+	return "worker is offline; start `dmr forge worker` locally"
 }
 
 // WorkerNotFoundError is returned when no worker matches the tool route.
