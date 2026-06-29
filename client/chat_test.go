@@ -73,6 +73,10 @@ func respWithToolCalls(calls ...provider.ToolCall) *provider.ChatResponse {
 	return &provider.ChatResponse{ToolCalls: calls, Usage: &provider.Usage{TotalTokens: 10}}
 }
 
+func respWithReasoning(text, reasoning string) *provider.ChatResponse {
+	return &provider.ChatResponse{Text: text, Reasoning: reasoning, Usage: &provider.Usage{TotalTokens: 5}}
+}
+
 func TestChatReturnsText(t *testing.T) {
 	fake := &fakeClient{completionQueue: []any{resp("hello")}}
 	cc := newTestChatClient(fake)
@@ -83,6 +87,22 @@ func TestChatReturnsText(t *testing.T) {
 	}
 	if result != "hello" {
 		t.Errorf("result = %q", result)
+	}
+}
+
+func TestChatRawReturnsTextAndReasoning(t *testing.T) {
+	fake := &fakeClient{completionQueue: []any{respWithReasoning("hello", "thinking")}}
+	cc := newTestChatClient(fake)
+
+	result, err := cc.ChatRaw(context.Background(), ChatOpts{Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "hello" {
+		t.Errorf("text = %q", result.Text)
+	}
+	if result.Reasoning != "thinking" {
+		t.Errorf("reasoning = %q", result.Reasoning)
 	}
 }
 

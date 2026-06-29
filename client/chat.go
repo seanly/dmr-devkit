@@ -85,6 +85,33 @@ func (c *ChatClient) Chat(ctx context.Context, opts ChatOpts) (string, error) {
 	return resp.Text, nil
 }
 
+// ChatRaw performs a non-streaming chat and returns the full provider response,
+// including both text and reasoning content. Useful when callers need to fall
+// back to reasoning if the model's primary content is empty.
+func (c *ChatClient) ChatRaw(ctx context.Context, opts ChatOpts) (*provider.ChatResponse, error) {
+	prepared, err := c.prepare(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.Core.RunChat(ctx, core.RunChatOpts{
+		Messages:     prepared.messages,
+		Tools:        prepared.schemas,
+		ToolChoice:   opts.ToolChoice,
+		MaxTokens:    opts.MaxTokens,
+		Temperature:  opts.Temperature,
+		TopP:         opts.TopP,
+		ExtraHeaders: opts.ExtraHeaders,
+	})
+	if err != nil {
+		c.recordError(opts, err)
+		return nil, err
+	}
+
+	c.recordSuccess(opts, resp, nil)
+	return resp, nil
+}
+
 // ToolCalls performs a chat and returns the tool calls.
 func (c *ChatClient) ToolCalls(ctx context.Context, opts ChatOpts) ([]core.ToolCallData, error) {
 	prepared, err := c.prepare(opts)
