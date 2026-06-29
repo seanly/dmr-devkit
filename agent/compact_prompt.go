@@ -8,22 +8,32 @@ import (
 // structuredCompactPrompt asks the model to produce a structured summary
 // wrapped in <summary> tags. We intentionally do NOT ask for an <analysis>
 // section so the model cannot leak its thought process into the stored summary.
-const structuredCompactPrompt = `Your task is to create a detailed summary of the conversation so far.
+const structuredCompactPrompt = `Your task is to create a detailed, self-contained summary of the conversation so far. The summary will become the "shared understanding" used to continue the conversation after a context handoff.
 
 CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 
+INHERITANCE: If the conversation below contains "[Previous Context Summary]", preserve its still-relevant content in the new summary. Update statuses: mark completed items done, drop stale constraints, add newly introduced pending tasks. Do NOT simply copy the old summary; merge it with the new conversation. Keep the original goal unless the user explicitly changed it.
+
+PRESERVATION PRIORITY (most to least important):
+1. User's explicit goals and high-level intent
+2. Active constraints, preferences, and user feedback (especially corrections)
+3. Pending tasks and open questions
+4. Files, code sections, and artifacts currently being worked on
+5. Errors encountered and how they were fixed
+6. Technical decisions and reasoning
+7. Older details that are no longer relevant may be dropped
+
 Your summary should include the following sections:
 
-1. **Primary Request and Intent**: Capture all of the user's explicit requests and intents in detail
-2. **Key Technical Concepts**: List all important technical concepts, technologies, and frameworks discussed.
-3. **Files and Code Sections**: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
-4. **Errors and Fixes**: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
-5. **Problem Solving**: Document problems solved and any ongoing troubleshooting efforts.
-6. **All User Messages**: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
-7. **Pending Tasks**: Outline any pending tasks that you have explicitly been asked to work on.
-8. **Current Work**: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
-9. **Optional Next Step**: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.
-                       If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
+1. **Primary Request and Intent**: What the user wants to achieve. Be specific and capture any explicit scope or success criteria.
+2. **Key Technical Concepts**: Important technologies, frameworks, or domain concepts discussed.
+3. **Files and Code Sections**: Specific files read, modified, or created. Include short code snippets only for the most important or recent changes, and note why each file matters.
+4. **Errors and Fixes**: Errors encountered and how they were resolved. Include exact error messages or user feedback when relevant.
+5. **Problem Solving**: Key decisions made and any ongoing troubleshooting.
+6. **Key User Messages and Feedback**: Capture user messages that changed intent, corrected you, or added constraints. Do NOT list every greeting or acknowledgment; focus on messages that affect future actions.
+7. **Pending Tasks**: Tasks explicitly requested but not yet completed.
+8. **Current Work**: What was being worked on immediately before this summary request. Include file names and the last action taken.
+9. **Optional Next Step**: A concise next step ONLY if the user's most recent messages clearly imply one. If the task is finished or unclear, write "None" or omit this section. Do not invent work.
 
 Output format:
 
@@ -37,46 +47,45 @@ Output format:
 
 3. Files and Code Sections:
    - [File Name 1]
-      - [Summary of why this file is important]
-      - [Important Code Snippet]
+      - [Why it matters]
+      - [Important snippet if any]
 
 4. Errors and Fixes:
-    - [Detailed description of error 1]:
-      - [How you fixed the error]
+    - [Error]: [How it was fixed]
 
 5. Problem Solving:
    [Description]
 
-6. All User Messages:
-    - [Detailed non tool use user message]
+6. Key User Messages and Feedback:
+    - [Message or feedback summary]
 
 7. Pending Tasks:
    - [Task 1]
 
 8. Current Work:
-   [Precise description of current work]
+   [Precise description]
 
 9. Optional Next Step:
-   [Optional Next step to take]
+   [Next step or "None"]
 </summary>
 
 Requirements:
-- The summary must be detailed enough for the conversation to continue seamlessly
-- Preserve all critical technical information (file paths, commands, configurations, etc.)
-- Use the same language as the conversation (Chinese for Chinese conversations, English for English conversations)
-- Length should be 800-1500 words
-- Do NOT output <analysis> tags, markdown code fences, or any meta-commentary about how you produced the summary`
+- The summary must be detailed enough for the conversation to continue seamlessly.
+- Preserve critical technical information (file paths, commands, configurations, exact error messages).
+- Use the same language as the conversation (Chinese for Chinese, English for English).
+- Length should be roughly 600-1200 words. Be concise but complete.
+- Do NOT output <analysis> tags, markdown code fences, or meta-commentary about how you produced the summary.`
 
 // continueAfterCompactPrompt is used after preemptive/proactive compact to help LLM continue smoothly.
-const continueAfterCompactPrompt = `I have compacted the conversation history to manage context size. The summary above captures:
+const continueAfterCompactPrompt = `I have compacted the conversation history to manage context size. The summary above and the [TaskState v1] block capture:
 
-- **Your original request and intent**: What you wanted to accomplish
-- **Key work completed**: Files examined, modified, or created
-- **Technical decisions**: Approaches chosen and trade-offs considered
-- **Current status**: What was being worked on immediately before this compact
-- **Pending tasks**: Any remaining items you've asked me to work on
+- **Your original request and intent**
+- **Key work completed**: files examined, modified, or created
+- **Active constraints and preferences**
+- **Pending tasks** that still need attention
+- **Current status**: what was being worked on immediately before this compact
 
-Please continue from where we left off. Reference the summary as needed for context. If you need specific details from earlier in the conversation, let me know and I can retrieve them.`
+Please continue from where we left off. Use the summary and task state as your working memory. If you need specific details from earlier in the conversation, use tapeSearch or ask the user rather than guessing.`
 
 var (
 	reSummaryTag   = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)

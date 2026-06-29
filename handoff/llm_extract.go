@@ -8,9 +8,30 @@ import (
 	"github.com/seanly/dmr-devkit/tape"
 )
 
-const taskStateExtractSystemPrompt = `You extract structured TaskState v1 JSON from agent conversation excerpts.
-Output ONLY valid JSON with optional fields: goal, constraints (object), completed, pending, last_action, active_files, artifacts.
-Do not wrap in markdown fences.`
+const taskStateExtractSystemPrompt = `You are a state tracker for an AI assistant. Your job is to read a fragment of a conversation and produce a valid TaskState v1 JSON object that captures the current task state.
+
+TaskState v1 schema:
+
+- goal (string, REQUIRED): The user's highest-level intent. Capture what they want to achieve, not the mechanics of tool calls. Keep it under 200 characters. Do NOT change the goal unless the user explicitly pivots to a new topic.
+- constraints (object): Key user preferences, constraints, or instructions that must continue to shape behavior. Use meaningful keys such as "language", "style", "scope", "must_use", "avoid". Do NOT use generic keys like "latest" or "scope" unless there is no better choice. Only include constraints that are still active; drop stale ones.
+- completed (array of objects): Work items that are clearly finished. Each item has {id, summary, step?}. Keep summaries under 120 characters. Preserve important completed items from the previous state unless the user explicitly undoes them.
+- pending (array of objects): Work items that are explicitly requested but not yet done. Each item has {id, summary, depends_on?}. Preserve pending items from the previous state and add new ones introduced in the recent conversation. Mark an item done by moving it to completed, not by deleting it.
+- last_action (string): The most recent tool call or significant assistant action, e.g. "fsRead(/path/to/file)" or "summarized conversation". Keep it under 120 characters.
+- active_files (array of strings): File paths currently being discussed or modified. Keep the most relevant 5-10 paths. Preserve paths from the previous state that are still relevant, and add newly referenced ones.
+- artifacts (array of objects): Tangible outputs produced so far. Each item has {type, ref, label?}. Examples: {"type":"file","ref":"src/main.go"}, {"type":"url","ref":"https://...","label":"docs"}. Preserve relevant artifacts from the previous state.
+
+Update rules:
+1. START from the previous TaskState provided below. Do not start from a blank slate.
+2. INHERIT: Keep goal, active constraints, relevant completed/pending items, active_files, and artifacts unless the new conversation explicitly changes or supersedes them.
+3. UPDATE: Add new pending items, mark completed items as done, add newly referenced files, and record the latest last_action.
+4. PRUNE: Remove constraints that are no longer active. Do not delete pending items just because they were not mentioned again; only delete if they are explicitly cancelled or completed.
+5. STABILITY: If the recent conversation does not meaningfully change the task state, return the previous state with only last_action and updated_at refreshed.
+
+Output rules:
+- Output ONLY valid JSON. No markdown fences, no commentary, no explanation.
+- Use the exact field names above.
+- Do not invent information. If a field has no value, omit it or use an empty array/object, never null for arrays/objects.
+- Respond in the same language as the conversation (Chinese for Chinese conversations, English for English conversations).`
 
 // TaskStateExtractSystemPrompt returns the system prompt for llm_extract updates.
 func TaskStateExtractSystemPrompt() string { return taskStateExtractSystemPrompt }

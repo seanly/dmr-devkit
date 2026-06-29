@@ -96,3 +96,52 @@ func TestBuildMessagesInjectsLatestTaskState(t *testing.T) {
 		t.Fatalf("task state block = %q", content)
 	}
 }
+
+func TestBuildMessagesInjectsCompleteTaskState(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	payload := map[string]any{
+		"schema_version": 1,
+		"goal":           "Refactor auth",
+		"constraints":    map[string]any{"language": "Go", "style": "clean"},
+		"pending": []any{
+			map[string]any{"id": "p1", "summary": "Extract jwt middleware"},
+		},
+		"completed": []any{
+			map[string]any{"id": "c1", "summary": "Add login handler"},
+		},
+		"last_action":  "fsRead(src/auth.go)",
+		"active_files": []any{"src/auth.go", "src/middleware.go"},
+		"artifacts": []any{
+			map[string]any{"type": "file", "ref": "src/auth.go", "label": "auth module"},
+		},
+		"source":     "llm_extract",
+		"updated_at": "2026-06-17T10:00:00Z",
+	}
+	entries := []TapeEntry{
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+		NewTaskStateEntry(payload),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 2 {
+		t.Fatalf("expected task_state system + 1 message, got %d", len(msgs))
+	}
+	content, _ := msgs[0]["content"].(string)
+	checks := []string{
+		"Refactor auth",
+		"constraints:",
+		"language:",
+		"pending:",
+		"Extract jwt middleware",
+		"completed:",
+		"Add login handler",
+		"last_action:",
+		"active_files:",
+		"artifacts:",
+		"auth module",
+	}
+	for _, want := range checks {
+		if !strings.Contains(content, want) {
+			t.Errorf("task state block missing %q; got:\n%s", want, content)
+		}
+	}
+}

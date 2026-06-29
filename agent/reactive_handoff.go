@@ -143,7 +143,8 @@ func (a *Agent) buildContinuationPrompt(info *contextOverflowInfo) string {
 	}
 
 	builder.WriteString("The tool results were too large. Please continue with the original task, ")
-	builder.WriteString("but use more specific queries (e.g., pagination, filters) to avoid large results.")
+	builder.WriteString("but use more specific queries (e.g., pagination, filters) to avoid large results. ")
+	builder.WriteString("If you need details from earlier in the conversation, use tapeSearch instead of guessing.")
 
 	return builder.String()
 }

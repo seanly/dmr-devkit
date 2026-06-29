@@ -426,6 +426,45 @@ func (a *Agent) shouldCompactNow(tapeName string, step int) bool {
 	return !hasCompacted || step-lastCompact >= 3
 }
 
+// canHandoffTool checks whether the built-in handoff tool is allowed to run on
+// the given tape. It prevents the LLM from invoking handoff repeatedly in short
+// succession when there has been no meaningful new conversation since the last
+// anchor (handoff or compact). The check is intentionally conservative: it only
+// blocks the LLM-driven handoff tool; user-initiated slash commands and automatic
+// loop-level handoffs are not gated here.
+func (a *Agent) CanHandoffTool(tapeName string) bool {
+	entries, err := a.tape.Store.FetchAll(tapeName, nil)
+	if err != nil {
+		return true
+	}
+
+	// Find the most recent anchor (handoff or compact).
+	lastAnchorIdx := -1
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == "anchor" {
+			lastAnchorIdx = i
+			break
+		}
+	}
+
+	// No prior anchor — allow the first handoff.
+	if lastAnchorIdx < 0 {
+		return true
+	}
+
+	// Count meaningful entries after the last anchor.
+	const minEntriesSinceAnchor = 5
+	count := 0
+	for i := lastAnchorIdx + 1; i < len(entries); i++ {
+		switch entries[i].Kind {
+		case "message", "tool_call", "tool_result":
+			count++
+		}
+	}
+
+	return count >= minEntriesSinceAnchor
+}
+
 // recordCompactStep records that a compact occurred at the given step.
 func (a *Agent) recordCompactStep(tapeName string, step int) {
 	a.mu.Lock()

@@ -43,13 +43,13 @@ func (a *Agent) updateTaskStateAfterToolRound(ctx context.Context, tapeName stri
 func (a *Agent) extractTaskStateLLM(ctx context.Context, prev *handoff.State, entries []tape.TapeEntry, step int) (handoff.State, error) {
 	base := a.stateUpdater().UpdateFromToolRound(prev, entries, step, "llm_extract")
 	prevJSON, _ := json.Marshal(prev)
-	prompt := fmt.Sprintf(`Previous TaskState:
+	prompt := fmt.Sprintf(`Previous TaskState (start from this and update it):
 %s
 
-Recent tape activity:
+Recent tape activity since the previous state:
 %s
 
-Extract updated TaskState v1 JSON.`,
+Produce the updated TaskState v1 JSON. Remember: inherit the goal and active constraints unless the user explicitly changed them; preserve pending items unless they are completed or cancelled; mark completed work as done; record the latest last_action and active files.`,
 		string(prevJSON), handoff.FormatRecentEntries(entries, 15))
 
 	raw, err := a.defaultChat.Chat(ctx, client.ChatOpts{

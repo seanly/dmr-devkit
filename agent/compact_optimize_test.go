@@ -48,7 +48,7 @@ func TestOptimizeMessagesForSummary(t *testing.T) {
 		t.Errorf("Expected 1 merged message after filtering empty content, got %d", len(optimized))
 	}
 
-	// Test case 4: Filter old compact summaries
+	// Test case 4: Extract latest compact summary as previous context
 	messages = []map[string]any{
 		{"role": "user", "content": "Hello"},
 		{"role": "system", "content": "[Context Summary]\nPrevious conversation summary..."},
@@ -56,32 +56,45 @@ func TestOptimizeMessagesForSummary(t *testing.T) {
 	}
 
 	optimized = optimizeMessagesForSummary(messages)
-	// Should filter out the compact summary message
-	if len(optimized) != 2 {
-		t.Errorf("Expected 2 messages after filtering compact summary, got %d", len(optimized))
+	// Should keep the latest summary as previous context, plus user + assistant
+	if len(optimized) != 3 {
+		t.Errorf("Expected 3 messages (previous context + user + assistant), got %d", len(optimized))
 	}
+	foundPrevious := false
 	for _, msg := range optimized {
 		content, _ := msg["content"].(string)
-		if strings.HasPrefix(content, "[Context Summary]") {
-			t.Error("Compact summary should be filtered out")
+		if strings.HasPrefix(content, "[Previous Context Summary]") {
+			foundPrevious = true
+			if !strings.Contains(content, "Previous conversation summary...") {
+				t.Errorf("Previous context should preserve compact summary content, got %s", content)
+			}
 		}
+		if strings.HasPrefix(content, "[Context Summary]") {
+			t.Error("Raw [Context Summary] should be transformed, not passed through")
+		}
+	}
+	if !foundPrevious {
+		t.Error("Latest compact summary should be preserved as previous context")
 	}
 }
 
-func TestFilterOldCompactSummaries(t *testing.T) {
-	// Test case 1: Filter single compact summary
+func TestExtractLatestCompactSummary(t *testing.T) {
+	// Test case 1: Extract single compact summary
 	messages := []map[string]any{
 		{"role": "user", "content": "Hello"},
 		{"role": "system", "content": "[Context Summary]\nPrevious summary"},
 		{"role": "assistant", "content": "Hi!"},
 	}
 
-	result := filterOldCompactSummaries(messages)
+	result, summary := extractLatestCompactSummary(messages)
 	if len(result) != 2 {
 		t.Errorf("Expected 2 messages, got %d", len(result))
 	}
+	if summary != "Previous summary" {
+		t.Errorf("Expected extracted summary 'Previous summary', got %q", summary)
+	}
 
-	// Test case 2: Filter multiple compact summaries
+	// Test case 2: Keep only the latest of multiple compact summaries
 	messages = []map[string]any{
 		{"role": "system", "content": "[Context Summary]\nFirst summary"},
 		{"role": "user", "content": "Hello"},
@@ -90,9 +103,12 @@ func TestFilterOldCompactSummaries(t *testing.T) {
 		{"role": "system", "content": "[Context Summary]\nThird summary"},
 	}
 
-	result = filterOldCompactSummaries(messages)
+	result, summary = extractLatestCompactSummary(messages)
 	if len(result) != 2 {
 		t.Errorf("Expected 2 messages, got %d", len(result))
+	}
+	if summary != "Third summary" {
+		t.Errorf("Expected latest summary 'Third summary', got %q", summary)
 	}
 
 	// Test case 3: No compact summaries
@@ -101,15 +117,21 @@ func TestFilterOldCompactSummaries(t *testing.T) {
 		{"role": "assistant", "content": "Hi!"},
 	}
 
-	result = filterOldCompactSummaries(messages)
+	result, summary = extractLatestCompactSummary(messages)
 	if len(result) != 2 {
 		t.Errorf("Expected 2 messages, got %d", len(result))
 	}
+	if summary != "" {
+		t.Errorf("Expected empty summary, got %q", summary)
+	}
 
 	// Test case 4: Empty messages
-	result = filterOldCompactSummaries([]map[string]any{})
+	result, summary = extractLatestCompactSummary([]map[string]any{})
 	if len(result) != 0 {
 		t.Errorf("Expected 0 messages, got %d", len(result))
+	}
+	if summary != "" {
+		t.Errorf("Expected empty summary, got %q", summary)
 	}
 
 	// Test case 5: Compact summary in the middle of content
@@ -117,10 +139,13 @@ func TestFilterOldCompactSummaries(t *testing.T) {
 		{"role": "user", "content": "Hello [Context Summary] in the middle"},
 	}
 
-	result = filterOldCompactSummaries(messages)
-	// Should NOT filter - only filter if message STARTS with [Context Summary]
+	result, summary = extractLatestCompactSummary(messages)
+	// Should NOT extract - only extract if message STARTS with [Context Summary]
 	if len(result) != 1 {
-		t.Errorf("Expected 1 message (content in middle should not be filtered), got %d", len(result))
+		t.Errorf("Expected 1 message (content in middle should not be extracted), got %d", len(result))
+	}
+	if summary != "" {
+		t.Errorf("Expected empty summary for inline marker, got %q", summary)
 	}
 }
 

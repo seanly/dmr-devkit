@@ -91,7 +91,6 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 
 // formatTaskStateBlock renders task_state payload for LLM injection.
 func formatTaskStateBlock(payload map[string]any) (string, bool) {
-	// Avoid import cycle with handoff package — duplicate minimal formatting via JSON round-trip.
 	content, ok := payload["goal"].(string)
 	if !ok || content == "" {
 		return "", false
@@ -101,7 +100,7 @@ func formatTaskStateBlock(payload map[string]any) (string, bool) {
 	b.WriteString("goal: ")
 	b.WriteString(content)
 	b.WriteByte('\n')
-	if constraints, ok := payload["constraints"].(map[string]any); ok {
+	if constraints, ok := payload["constraints"].(map[string]any); ok && len(constraints) > 0 {
 		b.WriteString("constraints:\n")
 		for k, v := range constraints {
 			b.WriteString("  ")
@@ -109,6 +108,30 @@ func formatTaskStateBlock(payload map[string]any) (string, bool) {
 			b.WriteString(": ")
 			b.WriteString(fmt.Sprint(v))
 			b.WriteByte('\n')
+		}
+	}
+	if pending, ok := payload["pending"].([]any); ok && len(pending) > 0 {
+		b.WriteString("pending:\n")
+		for _, item := range pending {
+			if m, ok := item.(map[string]any); ok {
+				if summary, ok := m["summary"].(string); ok && summary != "" {
+					b.WriteString("  - ")
+					b.WriteString(summary)
+					b.WriteByte('\n')
+				}
+			}
+		}
+	}
+	if completed, ok := payload["completed"].([]any); ok && len(completed) > 0 {
+		b.WriteString("completed:\n")
+		for _, item := range completed {
+			if m, ok := item.(map[string]any); ok {
+				if summary, ok := m["summary"].(string); ok && summary != "" {
+					b.WriteString("  - ")
+					b.WriteString(summary)
+					b.WriteByte('\n')
+				}
+			}
 		}
 	}
 	if la, ok := payload["last_action"].(string); ok && la != "" {
@@ -125,6 +148,34 @@ func formatTaskStateBlock(payload map[string]any) (string, bool) {
 			b.WriteString(fmt.Sprint(x))
 		}
 		b.WriteByte('\n')
+	}
+	if artifacts, ok := payload["artifacts"].([]any); ok && len(artifacts) > 0 {
+		b.WriteString("artifacts:\n")
+		for _, item := range artifacts {
+			if m, ok := item.(map[string]any); ok {
+				typ, _ := m["type"].(string)
+				ref, _ := m["ref"].(string)
+				label, _ := m["label"].(string)
+				if ref == "" {
+					continue
+				}
+				b.WriteString("  - ")
+				if label != "" {
+					b.WriteString(label)
+					b.WriteString(" (")
+					b.WriteString(ref)
+					b.WriteString(")")
+				} else {
+					b.WriteString(ref)
+				}
+				if typ != "" {
+					b.WriteString(" [")
+					b.WriteString(typ)
+					b.WriteString("]")
+				}
+				b.WriteByte('\n')
+			}
+		}
 	}
 	return b.String(), true
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/seanly/dmr-devkit/config"
+	"github.com/seanly/dmr-devkit/tape"
 )
 
 func TestNew_DefaultMaxSteps(t *testing.T) {
@@ -186,6 +187,35 @@ func TestShouldCompactNow(t *testing.T) {
 	// Step 1 after 4: wrap around -> reset -> allow
 	if !a.shouldCompactNow("tape1", 1) {
 		t.Error("step wrap should allow compact")
+	}
+}
+
+func TestCanHandoffTool(t *testing.T) {
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	a := New(nil, tm, nil, Config{})
+
+	// Empty tape: allow first handoff
+	if !a.CanHandoffTool("tape1") {
+		t.Error("empty tape should allow handoff")
+	}
+
+	// Add an anchor (simulating a previous handoff)
+	_ = store.Append("tape1", tape.NewAnchorEntry("handoff/tool", nil))
+
+	// Only a few entries after anchor: still blocked
+	_ = store.Append("tape1", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hi"}))
+	_ = store.Append("tape1", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hello"}))
+	if a.CanHandoffTool("tape1") {
+		t.Error("should block handoff with only 2 messages after anchor")
+	}
+
+	// Add more entries to reach threshold
+	for i := 0; i < 4; i++ {
+		_ = store.Append("tape1", tape.NewMessageEntry(map[string]any{"role": "user", "content": fmt.Sprintf("msg%d", i)}))
+	}
+	if !a.CanHandoffTool("tape1") {
+		t.Error("should allow handoff with 6 messages after anchor")
 	}
 }
 

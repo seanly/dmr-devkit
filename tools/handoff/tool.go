@@ -11,6 +11,7 @@ import (
 
 // Agent provides the methods needed by the handoff tool.
 type Agent interface {
+	CanHandoffTool(tapeName string) bool
 	CompactTapeWithFocus(ctx context.Context, tapeName, focus string) (summary string, err error)
 }
 
@@ -63,6 +64,12 @@ func handleHandoff(a Agent, ctx *tool.ToolContext, args map[string]any) (any, er
 	// clear error if invoked outside of a normal agent run.
 	if tm, ok := ctx.State[tool.StateKeyTapeManager].(*tape.TapeManager); !ok || tm == nil {
 		return nil, fmt.Errorf("tape manager not available")
+	}
+
+	// Prevent the LLM from repeatedly handoffing in short succession. User-initiated
+	// slash commands bypass the tool layer, so this guard only affects LLM-driven calls.
+	if !a.CanHandoffTool(tapeName) {
+		return "A handoff was already performed very recently. Please continue the conversation before compacting again.", nil
 	}
 
 	summary, err := a.CompactTapeWithFocus(ctx.Ctx, tapeName, focus)

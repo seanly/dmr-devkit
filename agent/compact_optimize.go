@@ -6,16 +6,22 @@ import (
 
 // optimizeMessagesForSummary optimizes messages before sending to LLM for summarization.
 // It performs the following optimizations:
-// 1. Filter out old compact summaries (avoid repeating previous summaries)
+// 1. Extract the most recent compact summary as "previous context" and filter older ones
 // 2. Deduplicate system prompts (keep only the first one)
 // 3. Merge consecutive messages into conversation blocks
 // 4. Compress tool outputs (truncate to maxToolContentLength)
 // 5. Filter out messages with empty content
 func optimizeMessagesForSummary(messages []map[string]any) []map[string]any {
-	const maxToolContentLength = 500
+	const (
+		maxToolContentLength       = 500
+		maxPreviousSummaryRunes    = 1500
+		previousSummaryRole        = "user"
+		previousSummaryPrefix      = "[Previous Context Summary]\n"
+	)
 
-	// Filter out old compact summaries first
-	messages = filterOldCompactSummaries(messages)
+	// Extract the latest compact summary as inherited context, then drop all summaries
+	// from the main stream so they are not summarized twice.
+	messages, previousSummary := extractLatestCompactSummary(messages)
 
 	var optimized []map[string]any
 	systemPromptSeen := make(map[string]bool)
@@ -75,23 +81,39 @@ func optimizeMessagesForSummary(messages []map[string]any) []map[string]any {
 	}
 
 	flushBlock()
+
+	// Inject the previous context summary as the first message so the summarizer sees it
+	// as background context but still summarizes the newer conversation as the primary input.
+	if previousSummary != "" {
+		runes := []rune(previousSummary)
+		if len(runes) > maxPreviousSummaryRunes {
+			previousSummary = string(runes[:maxPreviousSummaryRunes]) + "\n...[truncated]"
+		}
+		optimized = append([]map[string]any{{
+			"role":    previousSummaryRole,
+			"content": previousSummaryPrefix + previousSummary,
+		}}, optimized...)
+	}
+
 	return optimized
 }
 
-// filterOldCompactSummaries filters out messages that contain previous compact summaries.
-// This prevents old summaries from being fed back to the LLM for summarization,
-// which would waste tokens and potentially confuse the model.
-func filterOldCompactSummaries(messages []map[string]any) []map[string]any {
+// extractLatestCompactSummary filters out previous compact summaries from the message
+// stream and returns the most recent one as inherited context. Earlier summaries are
+// dropped to avoid compounding summary length across multiple handoffs.
+func extractLatestCompactSummary(messages []map[string]any) ([]map[string]any, string) {
 	var result []map[string]any
+	var latest string
 	for _, msg := range messages {
 		content, ok := msg["content"].(string)
 		if ok && strings.HasPrefix(content, "[Context Summary]") {
-			// Skip old compact summaries
+			// Strip the prefix and keep only the latest summary seen.
+			latest = strings.TrimSpace(strings.TrimPrefix(content, "[Context Summary]"))
 			continue
 		}
 		result = append(result, msg)
 	}
-	return result
+	return result, latest
 }
 
 // flattenMessagesForSummary flattens all messages into a single text block

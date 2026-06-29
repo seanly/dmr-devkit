@@ -10,9 +10,14 @@ import (
 )
 
 type mockAgent struct {
-	focus   string
-	summary string
-	err     error
+	focus        string
+	summary      string
+	err          error
+	canHandoff   bool
+}
+
+func (m *mockAgent) CanHandoffTool(_ string) bool {
+	return m.canHandoff
 }
 
 func (m *mockAgent) CompactTapeWithFocus(_ context.Context, _, focus string) (string, error) {
@@ -24,7 +29,7 @@ func (m *mockAgent) CompactTapeWithFocus(_ context.Context, _, focus string) (st
 }
 
 func TestNewToolSpec(t *testing.T) {
-	a := &mockAgent{summary: "summary"}
+	a := &mockAgent{summary: "summary", canHandoff: true}
 	tt := NewTool(a)
 	if tt.Spec.Name != "handoff" {
 		t.Errorf("name = %q, want handoff", tt.Spec.Name)
@@ -38,7 +43,7 @@ func TestNewToolSpec(t *testing.T) {
 }
 
 func TestHandleHandoff_WithFocus(t *testing.T) {
-	a := &mockAgent{summary: "focused summary"}
+	a := &mockAgent{summary: "focused summary", canHandoff: true}
 	tt := NewTool(a)
 	store := tape.NewInMemoryTapeStore()
 	tm := tape.NewTapeManager(store)
@@ -62,7 +67,7 @@ func TestHandleHandoff_WithFocus(t *testing.T) {
 }
 
 func TestHandleHandoff_NoFocus(t *testing.T) {
-	a := &mockAgent{summary: "general summary"}
+	a := &mockAgent{summary: "general summary", canHandoff: true}
 	tt := NewTool(a)
 	store := tape.NewInMemoryTapeStore()
 	tm := tape.NewTapeManager(store)
@@ -83,7 +88,7 @@ func TestHandleHandoff_NoFocus(t *testing.T) {
 }
 
 func TestHandleHandoff_MissingTape(t *testing.T) {
-	a := &mockAgent{summary: "summary"}
+	a := &mockAgent{summary: "summary", canHandoff: true}
 	tt := NewTool(a)
 	ctx := tool.NewToolContext(context.Background(), "", "")
 	ctx.State[tool.StateKeyTapeManager] = tape.NewTapeManager(tape.NewInMemoryTapeStore())
@@ -95,7 +100,7 @@ func TestHandleHandoff_MissingTape(t *testing.T) {
 }
 
 func TestHandleHandoff_MissingTapeManager(t *testing.T) {
-	a := &mockAgent{summary: "summary"}
+	a := &mockAgent{summary: "summary", canHandoff: true}
 	tt := NewTool(a)
 	ctx := tool.NewToolContext(context.Background(), "cli:main", "")
 
@@ -106,7 +111,7 @@ func TestHandleHandoff_MissingTapeManager(t *testing.T) {
 }
 
 func TestHandleHandoff_AgentError(t *testing.T) {
-	a := &mockAgent{err: errors.New("boom")}
+	a := &mockAgent{err: errors.New("boom"), canHandoff: true}
 	tt := NewTool(a)
 	store := tape.NewInMemoryTapeStore()
 	tm := tape.NewTapeManager(store)
@@ -116,6 +121,27 @@ func TestHandleHandoff_AgentError(t *testing.T) {
 	_, err := tt.Handler(ctx, nil)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestHandleHandoff_CooldownBlocks(t *testing.T) {
+	a := &mockAgent{summary: "summary", canHandoff: false}
+	tt := NewTool(a)
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	ctx := tool.NewToolContext(context.Background(), "cli:main", "")
+	ctx.State[tool.StateKeyTapeManager] = tm
+
+	out, err := tt.Handler(ctx, map[string]any{"focus": "auth module"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s, ok := out.(string)
+	if !ok || !containsSubstring(s, "already performed very recently") {
+		t.Fatalf("expected cooldown message, got: %v", out)
+	}
+	if a.focus != "" {
+		t.Error("cooldown should prevent CompactTapeWithFocus from being called")
 	}
 }
 
