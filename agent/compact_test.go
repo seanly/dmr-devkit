@@ -68,7 +68,7 @@ func TestBuildSummarizer_ExtractsSummaryTag(t *testing.T) {
 		&provider.ChatResponse{Text: "<summary>the summary</summary>", Usage: &provider.Usage{TotalTokens: 10}},
 	}}
 	a := newSummarizerTestAgent(fake)
-	summarize := a.buildSummarizer("")
+	summarize := a.buildSummarizer("tape1", "")
 
 	summary, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
@@ -90,7 +90,7 @@ func TestBuildSummarizer_FallsBackToReasoningWhenTextEmpty(t *testing.T) {
 		},
 	}}
 	a := newSummarizerTestAgent(fake)
-	summarize := a.buildSummarizer("")
+	summarize := a.buildSummarizer("tape1", "")
 
 	summary, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
@@ -108,7 +108,7 @@ func TestBuildSummarizer_ReturnsErrorWhenSummaryEmpty(t *testing.T) {
 		&provider.ChatResponse{Text: "", Reasoning: "", Usage: &provider.Usage{TotalTokens: 10}},
 	}}
 	a := newSummarizerTestAgent(fake)
-	summarize := a.buildSummarizer("")
+	summarize := a.buildSummarizer("tape1", "")
 
 	_, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},

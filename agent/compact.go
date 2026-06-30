@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/seanly/dmr-devkit/client"
+	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
@@ -27,14 +28,14 @@ func (a *Agent) CompactTapeWithName(ctx context.Context, tapeName, anchorName st
 func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string) (string, error) {
 	slog.Info("compact: starting focused summarization", "tape", tapeName, "focus", focus)
 
-	if a.clearToolsOnCompact() {
-		a.ClearDiscoveredTools(tapeName)
-		if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
-			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
-		}
-	}
-
 	if !a.llmCompactEnabled() {
+		// Even without LLM summarization, a handoff is a context reset.
+		if a.clearToolsOnCompact() {
+			a.ClearDiscoveredTools(tapeName)
+			if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
+				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
+			}
+		}
 		slog.Info("compact: skipped LLM summary (minimal profile)")
 		return "", nil
 	}
@@ -43,7 +44,7 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 		Tape:       tapeName,
 		AnchorName: "handoff/tool",
 		EventName:  "handoff/tool",
-		Summarizer: a.buildSummarizer(focus),
+		Summarizer: a.buildSummarizer(tapeName, focus),
 	})
 	if err != nil {
 		slog.Error("compact: focused summarization failed", "error", err)
@@ -65,6 +66,13 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 					slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
 				}
 			}
+			// Only reset plugin/discovered-tool state after a successful compact.
+			if a.clearToolsOnCompact() {
+				a.ClearDiscoveredTools(tapeName)
+				if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
+					slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
+				}
+			}
 			return c, nil
 		}
 	}
@@ -74,14 +82,14 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string) (string, error) {
 	slog.Info("compact: starting summarization", "tape", tapeName)
 
-	if a.clearToolsOnCompact() {
-		a.ClearDiscoveredTools(tapeName)
-		if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
-			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
-		}
-	}
-
 	if !a.llmCompactEnabled() {
+		// Even without LLM summarization, a compact is a context reset.
+		if a.clearToolsOnCompact() {
+			a.ClearDiscoveredTools(tapeName)
+			if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
+			}
+		}
 		slog.Info("compact: skipped LLM summary (minimal profile)")
 		return "", nil
 	}
@@ -89,7 +97,7 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
 		Tape:       tapeName,
 		AnchorName: anchorName,
-		Summarizer: a.buildSummarizer(focus),
+		Summarizer: a.buildSummarizer(tapeName, focus),
 	})
 	if err != nil {
 		slog.Error("compact: summarization failed", "error", err)
@@ -111,13 +119,20 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 					slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
 				}
 			}
+			// Only reset plugin/discovered-tool state after a successful compact.
+			if a.clearToolsOnCompact() {
+				a.ClearDiscoveredTools(tapeName)
+				if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+					slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
+				}
+			}
 			return c, nil
 		}
 	}
 	return "", nil
 }
 
-func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages []map[string]any) (string, error) {
+func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context, messages []map[string]any) (string, error) {
 	return func(ctx context.Context, messages []map[string]any) (string, error) {
 		// Optimize messages before sending to LLM
 		originalCount := len(messages)
@@ -129,6 +144,10 @@ func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages
 
 		messages = optimizeMessagesForSummary(messages)
 
+		// Fit the summarizer input into the current tape model's context budget.
+		maxInputTokens := summarizerInputBudget(a.GetCurrentModel(tapeName), a.config.AgentPolicy)
+		messages = truncateMessagesForSummary(messages, maxInputTokens)
+
 		optimizedCount := len(messages)
 		optimizedSize := calculateMessagesSize(messages)
 		optimizedTokens := estimator.Estimate(messages)
@@ -137,7 +156,8 @@ func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages
 			slog.Info("compact: optimized messages",
 				"original_count", originalCount, "optimized_count", optimizedCount,
 				"original_bytes", originalSize, "optimized_bytes", optimizedSize,
-				"original_tokens", originalTokens, "optimized_tokens", optimizedTokens)
+				"original_tokens", originalTokens, "optimized_tokens", optimizedTokens,
+				"max_input_tokens", maxInputTokens)
 		}
 
 		// Flatten all messages into a single user message
@@ -149,14 +169,38 @@ func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages
 			prompt += "\n\nIMPORTANT: The user has requested that the summary focus on the following topic. Prioritize information related to this focus, but still preserve other critical technical details.\nFocus: " + focus
 		}
 
+		// Use the tape's current chat client so the summarizer benefits from the same
+		// model/context-window that the agent is using. Fall back to the default client.
+		chatClient := a.summarizerChatClient(tapeName)
+		if chatClient == nil {
+			return "", fmt.Errorf("compact: no chat client available for summarization")
+		}
+
 		// Send as a single user message containing all conversation content + prompt
-		// Use default chat client for summarization (no per-tape override needed)
-		resp, err := a.defaultChat.ChatRaw(ctx, client.ChatOpts{
+		resp, err := chatClient.ChatRaw(ctx, client.ChatOpts{
 			Prompt:       flattenedContent + "\n\n=== 总结任务 ===\n\n" + prompt,
 			Messages:     nil, // No messages array, everything is in Prompt
 			SystemPrompt: "You are a professional conversation summarizer. Your task is to generate detailed, accurate, structured conversation summaries that preserve all critical technical information. Output only the content inside the <summary> tags. Do not include <analysis> tags, markdown fences, or any explanations outside the summary.",
 			MaxTokens:    8000,
 		})
+
+		// If the summarizer itself overflows, retry with a much smaller input window.
+		// This can happen when the configured context limit does not match the actual
+		// provider limit. Each retry halves the budget and drops older messages.
+		for attempt := 0; err != nil && isContextOverflowError(err) && attempt < 2 && maxInputTokens > 4000; attempt++ {
+			maxInputTokens /= 2
+			slog.Warn("compact: summarizer context overflow, retrying with smaller input",
+				"tape", tapeName, "attempt", attempt+1, "max_input_tokens", maxInputTokens)
+			messages = truncateMessagesForSummary(messages, maxInputTokens)
+			flattenedContent = flattenMessagesForSummary(messages)
+			resp, err = chatClient.ChatRaw(ctx, client.ChatOpts{
+				Prompt:       flattenedContent + "\n\n=== 总结任务 ===\n\n" + prompt,
+				Messages:     nil,
+				SystemPrompt: "You are a professional conversation summarizer. Your task is to generate detailed, accurate, structured conversation summaries that preserve all critical technical information. Output only the content inside the <summary> tags. Do not include <analysis> tags, markdown fences, or any explanations outside the summary.",
+				MaxTokens:    8000,
+			})
+		}
+
 		if err != nil {
 			return "", err
 		}
@@ -189,4 +233,39 @@ func (a *Agent) buildSummarizer(focus string) func(ctx context.Context, messages
 
 		return summary, nil
 	}
+}
+
+// summarizerChatClient returns the chat client that should be used for compact
+// summarization for the given tape. It prefers the tape's current model override
+// and falls back to the agent default.
+func (a *Agent) summarizerChatClient(tapeName string) *client.ChatClient {
+	if cc := a.getChatClient(tapeName); cc != nil {
+		return cc
+	}
+	return a.defaultChat
+}
+
+// summarizerInputBudget returns the maximum number of prompt tokens that should
+// be sent to the summarizer model. It reserves room for the summarizer prompt
+// itself and the generated summary output.
+func summarizerInputBudget(m *config.ModelConfig, agentCfg config.AgentConfig) int {
+	limit := 0
+	if m != nil {
+		limit = m.ResolveContextLimit(agentCfg)
+	}
+	if limit <= 0 {
+		limit = agentCfg.MaxToken
+	}
+	if limit <= 0 {
+		// Unknown model: assume a modern large-context default (e.g. Claude Sonnet).
+		return 120_000
+	}
+
+	// Reserve tokens for the summarizer instructions and the generated summary.
+	const reserved = 9000
+	if limit > reserved+4000 {
+		return limit - reserved
+	}
+	// Small configured budget: allow at least half for input.
+	return limit / 2
 }

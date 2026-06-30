@@ -162,3 +162,68 @@ func TestCalculateMessagesSize(t *testing.T) {
 		t.Errorf("Expected size >= %d, got %d", expectedMin, size)
 	}
 }
+
+func TestTruncateRunes_MultiByte(t *testing.T) {
+	s := "你好世界"
+	if got := truncateRunes(s, 2); got != "你好" {
+		t.Errorf("truncateRunes(%q, 2) = %q, want %q", s, got, "你好")
+	}
+	if got := truncateRunes(s, 10); got != s {
+		t.Errorf("truncateRunes(%q, 10) should return original, got %q", s, got)
+	}
+}
+
+func TestTruncateMessagesForSummary_PreservesPrefixAndRecent(t *testing.T) {
+	// Build a long message list: previous summary + many user/assistant turns.
+	var messages []map[string]any
+	messages = append(messages, map[string]any{
+		"role":    "user",
+		"content": previousSummaryPrefix + strings.Repeat("past context ", 100),
+	})
+	for i := 0; i < 20; i++ {
+		messages = append(messages, map[string]any{
+			"role":    "user",
+			"content": strings.Repeat("a", 500),
+		})
+		messages = append(messages, map[string]any{
+			"role":    "assistant",
+			"content": strings.Repeat("b", 500),
+		})
+	}
+
+	// Force truncation to a budget that can fit the prefix + two recent turns
+	// but not the full conversation.
+	trimmed := truncateMessagesForSummary(messages, 1000)
+
+	if len(trimmed) == 0 {
+		t.Fatal("truncateMessagesForSummary returned no messages")
+	}
+	// First message should still be the previous context summary.
+	first, _ := trimmed[0]["content"].(string)
+	if !strings.HasPrefix(first, previousSummaryPrefix) {
+		t.Error("truncateMessagesForSummary dropped the previous context summary")
+	}
+	// It should have dropped some of the oldest non-prefix turns.
+	if len(trimmed) >= len(messages) {
+		t.Errorf("expected truncation to reduce message count, got %d vs %d", len(trimmed), len(messages))
+	}
+}
+
+func TestCompressToolOutputs_DoesNotMutateOriginal(t *testing.T) {
+	msg := map[string]any{
+		"role":    "user",
+		"content": "[Tool Output]\n" + strings.Repeat("x", 1000),
+	}
+	compressed := compressToolOutputs([]map[string]any{msg}, 10)
+	if len(compressed) != 1 {
+		t.Fatal("expected 1 compressed message")
+	}
+	orig, _ := msg["content"].(string)
+	if !strings.HasSuffix(orig, strings.Repeat("x", 1000)) {
+		t.Error("original message was mutated")
+	}
+	comp, _ := compressed[0]["content"].(string)
+	if strings.Contains(comp, strings.Repeat("x", 1000)) {
+		t.Error("compressed message still contains full tool output")
+	}
+}

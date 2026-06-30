@@ -411,9 +411,14 @@ func (a *Agent) ContextTokenBudget(tapeName string) int {
 }
 
 // shouldCompactNow checks whether a compact is allowed at the given step.
-// It enforces a minimum 3-step gap between compacts for the same tape,
-// and resets if the step counter wraps (new conversation cycle).
-func (a *Agent) shouldCompactNow(tapeName string, step int) bool {
+// It enforces a minimum 3-step gap between compacts for the same tape, but
+// relaxes that gap when estimated tokens have already crossed the configured
+// handoff threshold (so rapid token growth after many tool calls can still be
+// compacted). It resets if the step counter wraps (new conversation cycle).
+func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens, limit int) bool {
+	// Compute threshold outside the lock: it also acquires a.mu for model lookup.
+	th := a.handoffThreshold(tapeName)
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -423,7 +428,27 @@ func (a *Agent) shouldCompactNow(tapeName string, step int) bool {
 		delete(a.lastCompactStep, tapeName)
 		return true
 	}
-	return !hasCompacted || step-lastCompact >= 3
+
+	gap := 0
+	if hasCompacted {
+		gap = step - lastCompact
+	}
+
+	// Normal rule: allow if never compacted or at least 3 steps have passed.
+	if !hasCompacted || gap >= 3 {
+		return true
+	}
+
+	// Pressure override: if the context is already above the handoff threshold,
+	// allow compaction after just one step so tool-heavy runs don't overflow
+	// while waiting for the normal 3-step cooldown.
+	if limit > 0 && estimatedTokens > 0 && gap >= 1 {
+		if float64(estimatedTokens) >= float64(limit)*th {
+			return true
+		}
+	}
+
+	return false
 }
 
 // canHandoffTool checks whether the built-in handoff tool is allowed to run on

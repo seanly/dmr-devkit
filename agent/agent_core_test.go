@@ -168,25 +168,35 @@ func TestShouldCompactNow(t *testing.T) {
 	a := New(nil, nil, nil, Config{})
 
 	// First call: never compacted, should allow
-	if !a.shouldCompactNow("tape1", 1) {
+	if !a.shouldCompactNow("tape1", 1, 0, 0) {
 		t.Error("first compact should be allowed")
 	}
 	a.recordCompactStep("tape1", 1)
 
-	// Step 2: too soon (gap < 3)
-	if a.shouldCompactNow("tape1", 2) {
+	// Step 2: too soon (gap < 3), no token pressure
+	if a.shouldCompactNow("tape1", 2, 0, 0) {
 		t.Error("step 2 should be blocked (gap < 3)")
 	}
 
 	// Step 4: allowed (gap == 3)
-	if !a.shouldCompactNow("tape1", 4) {
+	if !a.shouldCompactNow("tape1", 4, 0, 0) {
 		t.Error("step 4 should be allowed (gap == 3)")
 	}
 	a.recordCompactStep("tape1", 4)
 
 	// Step 1 after 4: wrap around -> reset -> allow
-	if !a.shouldCompactNow("tape1", 1) {
+	if !a.shouldCompactNow("tape1", 1, 0, 0) {
 		t.Error("step wrap should allow compact")
+	}
+
+	// Pressure override: step 5 with prompt tokens above threshold should be allowed.
+	a.recordCompactStep("tape1", 4)
+	if !a.shouldCompactNow("tape1", 5, 8500, 10000) {
+		t.Error("step 5 should be allowed when above threshold with gap >= 1")
+	}
+	// But still blocked on the very next step if pressure is gone.
+	if a.shouldCompactNow("tape1", 5, 0, 10000) {
+		t.Error("step 5 should still be blocked without token pressure")
 	}
 }
 

@@ -301,7 +301,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if estimatedTokens > 0 && a.shouldAutoHandoffByEstimate(tapeName, estimatedTokens) {
 				slog.Info("compact: preemptive trigger", "estimated_tokens", estimatedTokens)
 
-				if a.shouldCompactNow(tapeName, step) {
+				if a.shouldCompactNow(tapeName, step, estimatedTokens, a.handoffContextLimit(tapeName)) {
 					handoffName := fmt.Sprintf("auto:preemptive:%s", time.Now().UTC().Format("20060102-150405"))
 					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "preemptive", step); ok || a.taskStateEnabled() {
 						slog.Info("compact: preemptive handoff done", "anchor", handoffName)
@@ -637,7 +637,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				limit := a.handoffContextLimit(tapeName)
 				threshold := a.handoffThreshold(tapeName)
 
-				if !a.shouldCompactNow(tapeName, step) {
+				if !a.shouldCompactNow(tapeName, step, pt, limit) {
 					slog.Warn("compact: skipped (too soon after last compact)", "current_step", step)
 				} else {
 					slog.Info("compact: triggered", "prompt_tokens", pt, "limit", limit, "threshold", threshold, "effective_limit", int(float64(limit)*threshold))
