@@ -92,8 +92,14 @@ func TestBuildMessagesInjectsLatestTaskState(t *testing.T) {
 		t.Fatalf("first message role = %v", msgs[0]["role"])
 	}
 	content, _ := msgs[0]["content"].(string)
-	if !strings.Contains(content, "TaskState v1") || !strings.Contains(content, "Ship feature") {
-		t.Fatalf("task state block = %q", content)
+	if strings.Contains(content, "[TaskState v1]") {
+		t.Fatalf("task state block should not contain legacy prefix; got:\n%s", content)
+	}
+	if !strings.Contains(content, "goal: Ship feature") {
+		t.Fatalf("task state block missing goal; got:\n%s", content)
+	}
+	if msgs[0]["context_kind"] != "task_state" {
+		t.Fatalf("expected context_kind=task_state, got %v", msgs[0]["context_kind"])
 	}
 }
 
@@ -143,5 +149,33 @@ func TestBuildMessagesInjectsCompleteTaskState(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("task state block missing %q; got:\n%s", want, content)
 		}
+	}
+	if msgs[0]["context_kind"] != "task_state" {
+		t.Fatalf("expected context_kind=task_state, got %v", msgs[0]["context_kind"])
+	}
+}
+
+func TestBuildMessagesCompactSummaryHasNoPrefixAndContextKind(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	entries := []TapeEntry{
+		NewCompactSummaryEntry("previous summary text"),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 2 {
+		t.Fatalf("expected compact_summary + message, got %d", len(msgs))
+	}
+	if msgs[0]["role"] != "system" {
+		t.Fatalf("compact_summary role = %v", msgs[0]["role"])
+	}
+	content, _ := msgs[0]["content"].(string)
+	if strings.Contains(content, "[Context Summary]") {
+		t.Errorf("compact_summary should not contain legacy prefix; got %q", content)
+	}
+	if content != "previous summary text" {
+		t.Errorf("compact_summary content = %q, want %q", content, "previous summary text")
+	}
+	if msgs[0]["context_kind"] != "compact_summary" {
+		t.Fatalf("expected context_kind=compact_summary, got %v", msgs[0]["context_kind"])
 	}
 }

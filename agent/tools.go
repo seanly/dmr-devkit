@@ -17,22 +17,23 @@ func (a *Agent) collectToolsWithDiscoveryCached(ctx context.Context, tapeName st
 	if tapeName == "" {
 		return a.collectToolsWithDiscovery(ctx, tapeName)
 	}
-	a.toolsCacheMu.RLock()
-	cached, ok := a.toolsCache[tapeName]
-	a.toolsCacheMu.RUnlock()
-	if ok {
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	cached := ts.toolsCache
+	ts.mu.Unlock()
+	if cached != nil {
 		return cached
 	}
+
 	tools := a.collectToolsWithDiscovery(ctx, tapeName)
-	a.toolsCacheMu.Lock()
-	defer a.toolsCacheMu.Unlock()
-	if len(a.toolsCache) >= maxToolsCache {
-		for k := range a.toolsCache {
-			delete(a.toolsCache, k)
-			break
-		}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	// Re-check in case another goroutine populated the cache while we built.
+	if ts.toolsCache != nil {
+		return ts.toolsCache
 	}
-	a.toolsCache[tapeName] = tools
+	ts.toolsCache = tools
 	return tools
 }
 

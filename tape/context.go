@@ -58,8 +58,9 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 	}
 	if taskStateBlock != "" {
 		messages = append(messages, map[string]any{
-			"role":    "system",
-			"content": taskStateBlock,
+			"role":         "system",
+			"content":      taskStateBlock,
+			"context_kind": "task_state",
 		})
 	}
 	for _, e := range entries {
@@ -77,8 +78,9 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 		case "compact_summary":
 			if content, ok := e.Payload["content"].(string); ok {
 				messages = append(messages, map[string]any{
-					"role":    "system",
-					"content": "[Context Summary]\n" + content,
+					"role":         "system",
+					"content":      content,
+					"context_kind": "compact_summary",
 				})
 			}
 		case "task_state", "handoff_packet", "content_replacement":
@@ -96,7 +98,6 @@ func formatTaskStateBlock(payload map[string]any) (string, bool) {
 		return "", false
 	}
 	var b strings.Builder
-	b.WriteString("[TaskState v1]\n")
 	b.WriteString("goal: ")
 	b.WriteString(content)
 	b.WriteByte('\n')

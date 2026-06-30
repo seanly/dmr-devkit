@@ -134,23 +134,37 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 
 func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context, messages []map[string]any) (string, error) {
 	return func(ctx context.Context, messages []map[string]any) (string, error) {
-		// Optimize messages before sending to LLM
-		originalCount := len(messages)
-		originalSize := calculateMessagesSize(messages)
+		// Optimize messages before sending to LLM. Prefer the raw tape entries so we
+		// can identify compact_summary/task_state by kind; fall back to the message
+		// stream passed by tape.Compact when no store is available (tests).
+		var optimized []map[string]any
+		if a.tape != nil && a.tape.Store != nil {
+			entries, err := a.tape.Store.FetchAll(tapeName, &tape.FetchOpts{LastAnchor: true})
+			if err != nil {
+				entries, err = a.tape.Store.FetchAll(tapeName, nil)
+			}
+			if err == nil && len(entries) > 0 {
+				optimized = optimizeEntriesForSummary(entries)
+			}
+		}
+		if optimized == nil {
+			optimized = optimizeMessagesForSummary(messages)
+		}
+
+		originalCount := len(optimized)
+		originalSize := calculateMessagesSize(optimized)
 
 		// Estimate tokens using the new token estimator
 		estimator := NewTokenEstimator()
-		originalTokens := estimator.Estimate(messages)
-
-		messages = optimizeMessagesForSummary(messages)
+		originalTokens := estimator.Estimate(optimized)
 
 		// Fit the summarizer input into the current tape model's context budget.
 		maxInputTokens := summarizerInputBudget(a.GetCurrentModel(tapeName), a.config.AgentPolicy)
-		messages = truncateMessagesForSummary(messages, maxInputTokens)
+		optimized = truncateMessagesForSummary(optimized, maxInputTokens)
 
-		optimizedCount := len(messages)
-		optimizedSize := calculateMessagesSize(messages)
-		optimizedTokens := estimator.Estimate(messages)
+		optimizedCount := len(optimized)
+		optimizedSize := calculateMessagesSize(optimized)
+		optimizedTokens := estimator.Estimate(optimized)
 
 		if originalCount > 0 {
 			slog.Info("compact: optimized messages",
@@ -161,7 +175,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 		}
 
 		// Flatten all messages into a single user message
-		flattenedContent := flattenMessagesForSummary(messages)
+		flattenedContent := flattenMessagesForSummary(optimized)
 
 		// Use structured prompt (Claude Code style)
 		prompt := structuredCompactPrompt
@@ -182,6 +196,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 			Messages:     nil, // No messages array, everything is in Prompt
 			SystemPrompt: "You are a professional conversation summarizer. Your task is to generate detailed, accurate, structured conversation summaries that preserve all critical technical information. Output only the content inside the <summary> tags. Do not include <analysis> tags, markdown fences, or any explanations outside the summary.",
 			MaxTokens:    8000,
+			ContextLimit: a.handoffContextLimit(tapeName),
 		})
 
 		// If the summarizer itself overflows, retry with a much smaller input window.
@@ -191,13 +206,14 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 			maxInputTokens /= 2
 			slog.Warn("compact: summarizer context overflow, retrying with smaller input",
 				"tape", tapeName, "attempt", attempt+1, "max_input_tokens", maxInputTokens)
-			messages = truncateMessagesForSummary(messages, maxInputTokens)
-			flattenedContent = flattenMessagesForSummary(messages)
+			optimized = truncateMessagesForSummary(optimized, maxInputTokens)
+			flattenedContent = flattenMessagesForSummary(optimized)
 			resp, err = chatClient.ChatRaw(ctx, client.ChatOpts{
 				Prompt:       flattenedContent + "\n\n=== 总结任务 ===\n\n" + prompt,
 				Messages:     nil,
 				SystemPrompt: "You are a professional conversation summarizer. Your task is to generate detailed, accurate, structured conversation summaries that preserve all critical technical information. Output only the content inside the <summary> tags. Do not include <analysis> tags, markdown fences, or any explanations outside the summary.",
 				MaxTokens:    8000,
+				ContextLimit: a.handoffContextLimit(tapeName),
 			})
 		}
 

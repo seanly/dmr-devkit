@@ -8,23 +8,21 @@ import (
 
 func TestShouldAutoHandoffByEstimate(t *testing.T) {
 	// Create a test agent with config
-	a := &Agent{
-		config: Config{
-			AgentPolicy: config.AgentConfig{
+	a := New(nil, nil, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			MaxToken:         100000,
+			HandoffThreshold: 0.8,
+		},
+		Models: []config.ModelConfig{
+			{
+				Name:             "test-model",
+				Model:            "test-model",
+				Default:          true,
 				MaxToken:         100000,
 				HandoffThreshold: 0.8,
 			},
-			Models: []config.ModelConfig{
-				{
-					Name:             "test-model",
-					Model:            "test-model",
-					Default:          true,
-					MaxToken:         100000,
-					HandoffThreshold: 0.8,
-				},
-			},
 		},
-	}
+	})
 
 	tests := []struct {
 		name            string
@@ -51,14 +49,12 @@ func TestShouldAutoHandoffByEstimate(t *testing.T) {
 
 func TestShouldAutoHandoffByEstimateNoConfig(t *testing.T) {
 	// Test with no model config
-	a := &Agent{
-		config: Config{
-			AgentPolicy: config.AgentConfig{
-				MaxToken:         0, // No limit
-				HandoffThreshold: 0.8,
-			},
+	a := New(nil, nil, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			MaxToken:         0, // No limit
+			HandoffThreshold: 0.8,
 		},
-	}
+	})
 
 	result := a.shouldAutoHandoffByEstimate("test-tape", 90000)
 	if result != false {

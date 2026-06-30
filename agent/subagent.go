@@ -69,19 +69,22 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 		}
 	}
 
-	a.mu.RLock()
-	prevChildOverride, hadChildOverride := a.modelOverrides[childTape]
-	a.mu.RUnlock()
+	childTS := a.tapeStates.getOrCreate(childTape)
+	childTS.mu.Lock()
+	prevChildOverride := childTS.modelOverride
+	hadChildOverride := prevChildOverride != ""
+	prevChildClient := childTS.chatClient
+	childTS.mu.Unlock()
 	defer func() {
-		// Clean up per-tape ChatClient for subagent
-		a.mu.Lock()
-		delete(a.chatClients, childTape)
+		// Restore per-tape model override and chat client for subagent.
+		childTS.mu.Lock()
+		childTS.chatClient = prevChildClient
 		if hadChildOverride {
-			a.modelOverrides[childTape] = prevChildOverride
+			childTS.modelOverride = prevChildOverride
 		} else {
-			delete(a.modelOverrides, childTape)
+			childTS.modelOverride = ""
 		}
-		a.mu.Unlock()
+		childTS.mu.Unlock()
 	}()
 
 	if strings.TrimSpace(modelName) != "" {
@@ -108,6 +111,7 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 		tapeContextOverride: tc,
 		maxSteps:            effectiveMaxSteps,
 		subagents:           subagents,
+		transient:           true,
 	}
 
 	// Exclude delegation tools when subagent has no explicit delegation allowlist,
@@ -128,9 +132,26 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 		}
 	}
 
+	// Isolate tool-result externalization state so the subagent cannot mutate
+	// the parent's persisted output/replay bookkeeping.
+	childToolResults := a.toolResults.CloneState()
+	mode.toolResultManager = childToolResults
+
 	res, _, err := a.run(ctx, childTape, prompt, 0, mode, "")
 	if err != nil {
-		return nil, err
+		// Record a failure handoff packet on the child tape so audit/debug tools
+		// can see the error state. Preserve existing error semantics for callers.
+		childEntries, _ := a.tape.Store.FetchAll(childTape, nil)
+		taskState := handoff.LatestState(childEntries)
+		toolCalls := countToolCallsInTape(childEntries)
+		packet := &handoff.Packet{
+			Summary:   fmt.Sprintf("subagent failed: %v", err),
+			Text:      err.Error(),
+			TaskState: taskState,
+			Metrics:   &handoff.Metrics{ToolCalls: toolCalls},
+		}
+		_ = a.tape.AppendEntry(childTape, tape.NewHandoffPacketEntry(packet.ToPayload()))
+		return &SubagentResult{Text: err.Error(), Packet: packet}, err
 	}
 	if res == nil {
 		return &SubagentResult{}, nil

@@ -68,21 +68,17 @@ type Agent struct {
 	config      Config
 	executor    *tool.ToolExecutor
 
-	mu              sync.RWMutex
-	chatClients     map[string]*client.ChatClient // per-tape ChatClient cache
-	sessionStarted  map[string]bool               // tracks whether session/start anchor was written per tape
-	modelOverrides  map[string]string             // per-tape model override: tape -> model name
-	lastCompactStep map[string]int                // tracks last compact step per tape
-	discoveredTools map[string]bool               // discovered deferred tool names (key: "tape:toolName")
+	// tapeStates holds all mutable per-tape runtime state under a single coherent lock.
+	tapeStates tapeStateMap
 
-	toolsCacheMu sync.RWMutex
-	toolsCache   map[string][]*tool.Tool // per-tape tool list cache
+	// cfgMu protects the two mutable config fields that can be injected after New.
+	cfgMu sync.Mutex
 
 	onToolCallMu      sync.RWMutex // protects config.OnToolCall
 	reviewRunner      ReviewDelegate
 	extendedTools     []*tool.Tool // cached extended tools from all plugins
-	extendedToolsOnce sync.Once    // ensure extended tools are loaded once
-	extendedToolsMu   sync.Mutex   // protects extendedToolsOnce reset
+	extLoaded         bool         // guarded by extMu
+	extMu             sync.Mutex   // guards extendedTools and extLoaded
 
 	toolResults *toolresult.Manager // large tool-output externalization + microcompact state
 
@@ -98,18 +94,18 @@ type Agent struct {
 
 // SetTapeControl injects the TapeControl dependency.
 func (a *Agent) SetTapeControl(tc any) {
-	a.mu.Lock()
+	a.cfgMu.Lock()
 	a.config.TapeControl = tc
-	a.mu.Unlock()
+	a.cfgMu.Unlock()
 }
 
 // SetDefaultTape sets the canonical session tape name used by interceptors for
 // stable override keys (e.g. CLI REPL so ,tape.switch resolves relative to the
 // original session tape regardless of current effective tape).
 func (a *Agent) SetDefaultTape(tape string) {
-	a.mu.Lock()
+	a.cfgMu.Lock()
 	a.config.DefaultTape = tape
-	a.mu.Unlock()
+	a.cfgMu.Unlock()
 }
 
 // New creates a new Agent.
@@ -129,17 +125,12 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 		hooks = noopHooks{}
 	}
 	a := &Agent{
-		defaultChat:     chat,
-		tape:            tm,
-		hooks:           hooks,
-		config:          cfg,
-		chatClients:     make(map[string]*client.ChatClient),
-		sessionStarted:  make(map[string]bool),
-		modelOverrides:  make(map[string]string),
-		lastCompactStep: make(map[string]int),
-		discoveredTools: make(map[string]bool),
-		toolsCache:      make(map[string][]*tool.Tool),
-		toolResults:     toolresult.NewManager(buildToolResultPolicy(cfg)),
+		defaultChat: chat,
+		tape:        tm,
+		hooks:       hooks,
+		config:      cfg,
+		tapeStates:  newTapeStateMap(maxChatClients),
+		toolResults: toolresult.NewManager(buildToolResultPolicy(cfg)),
 	}
 	a.precomputePromptBases()
 	a.precomputeTapeModels()
@@ -159,8 +150,6 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 // BuiltinTools returns the devkit-injected built-in tools (e.g. toolSearch, handoff).
 // These are always loaded and may be exposed to the host for slash/comma command dispatch.
 func (a *Agent) BuiltinTools() []*tool.Tool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
 	out := make([]*tool.Tool, len(a.builtinTools))
 	copy(out, a.builtinTools)
 	return out
@@ -194,8 +183,6 @@ func (a *Agent) EmitUIWidget(widget any) {
 
 // Tracer returns the configured tracer, or nil.
 func (a *Agent) Tracer() *observe.Tracer {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
 	return a.config.Tracer
 }
 
@@ -277,10 +264,12 @@ func (a *Agent) GetCurrentModelName(tapeName string) (string, string) {
 
 // GetCurrentModel returns the model in use for the given tape.
 func (a *Agent) GetCurrentModel(tapeName string) *config.ModelConfig {
-	a.mu.RLock()
-	name, ok := a.modelOverrides[tapeName]
-	a.mu.RUnlock()
-	if ok {
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	name := ts.modelOverride
+	ts.mu.Unlock()
+
+	if name != "" {
 		for i := range a.config.Models {
 			if a.config.Models[i].Name == name {
 				return &a.config.Models[i]
@@ -314,10 +303,11 @@ func (a *Agent) SwitchModel(tapeName, modelName string) error {
 		m := &a.config.Models[i]
 		if m.Name == modelName || m.Model == modelName {
 			cc := a.buildChatClient(m)
-			a.mu.Lock()
-			a.modelOverrides[tapeName] = m.Name
-			a.mu.Unlock()
-			a.storeChatClient(tapeName, cc)
+			ts := a.tapeStates.getOrCreate(tapeName)
+			ts.mu.Lock()
+			ts.modelOverride = m.Name
+			ts.chatClient = cc
+			ts.mu.Unlock()
 			return nil
 		}
 	}
@@ -328,15 +318,11 @@ const maxChatClients = 100
 const maxToolsCache = 100
 
 func (a *Agent) storeChatClient(tapeName string, cc *client.ChatClient) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.chatClients) >= maxChatClients {
-		for k := range a.chatClients {
-			delete(a.chatClients, k)
-			break
-		}
-	}
-	a.chatClients[tapeName] = cc
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.chatClient = cc
+	ts.touch()
 }
 
 // RestartProcess sends SIGHUP to the current process to trigger a hot restart
@@ -373,16 +359,17 @@ func (a *Agent) buildChatClient(model *config.ModelConfig) *client.ChatClient {
 // getChatClient returns the ChatClient for the given tape.
 // If the tape has a model override, returns a per-tape client; otherwise returns the default client.
 func (a *Agent) getChatClient(tapeName string) *client.ChatClient {
-	a.mu.RLock()
-	cc, hasCached := a.chatClients[tapeName]
-	modelName, hasOverride := a.modelOverrides[tapeName]
-	a.mu.RUnlock()
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	cc := ts.chatClient
+	modelName := ts.modelOverride
+	ts.mu.Unlock()
 
-	if hasCached {
+	if cc != nil {
 		return cc
 	}
 
-	if hasOverride {
+	if modelName != "" {
 		for i := range a.config.Models {
 			if a.config.Models[i].Name == modelName {
 				cc = a.buildChatClient(&a.config.Models[i])
@@ -415,17 +402,16 @@ func (a *Agent) ContextTokenBudget(tapeName string) int {
 // relaxes that gap when estimated tokens have already crossed the configured
 // handoff threshold (so rapid token growth after many tool calls can still be
 // compacted). It resets if the step counter wraps (new conversation cycle).
-func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens, limit int) bool {
-	// Compute threshold outside the lock: it also acquires a.mu for model lookup.
-	th := a.handoffThreshold(tapeName)
+func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, limit int, threshold float64) bool {
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	lastCompact, hasCompacted := a.lastCompactStep[tapeName]
+	lastCompact := ts.lastCompactStep
+	hasCompacted := lastCompact >= 0
 	// If current step < last recorded step, it's a new conversation cycle — reset.
 	if hasCompacted && step < lastCompact {
-		delete(a.lastCompactStep, tapeName)
+		ts.lastCompactStep = 0
 		return true
 	}
 
@@ -443,7 +429,7 @@ func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens, limit i
 	// allow compaction after just one step so tool-heavy runs don't overflow
 	// while waiting for the normal 3-step cooldown.
 	if limit > 0 && estimatedTokens > 0 && gap >= 1 {
-		if float64(estimatedTokens) >= float64(limit)*th {
+		if float64(estimatedTokens) >= float64(limit)*threshold {
 			return true
 		}
 	}
@@ -492,9 +478,11 @@ func (a *Agent) CanHandoffTool(tapeName string) bool {
 
 // recordCompactStep records that a compact occurred at the given step.
 func (a *Agent) recordCompactStep(tapeName string, step int) {
-	a.mu.Lock()
-	a.lastCompactStep[tapeName] = step
-	a.mu.Unlock()
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	ts.lastCompactStep = step
+	ts.mu.Unlock()
+	a.persistTapeState(tapeName)
 }
 
 func (a *Agent) handoffThreshold(tapeName string) float64 {
@@ -563,6 +551,7 @@ func (a *Agent) shouldAutoHandoff(tapeName string, latestUsage map[string]any) b
 	if !ok {
 		return false
 	}
+	a.contextBudgetForTape(tapeName).UpdateReported(pt)
 	th := a.handoffThreshold(tapeName)
 	return float64(pt) >= float64(limit)*th
 }
@@ -574,8 +563,14 @@ func (a *Agent) shouldAutoHandoffByEstimate(tapeName string, estimatedTokens int
 	if limit <= 0 || estimatedTokens <= 0 {
 		return false
 	}
+	a.contextBudgetForTape(tapeName).UpdateEstimated(estimatedTokens)
 	th := a.handoffThreshold(tapeName)
 	return float64(estimatedTokens) >= float64(limit)*th
+}
+
+// contextBudgetForTape returns the context budget tracker for the given tape.
+func (a *Agent) contextBudgetForTape(tapeName string) *contextBudget {
+	return a.tapeStates.getOrCreate(tapeName).budget
 }
 
 // estimateContextTokens estimates the token count for the current tape context.
@@ -625,25 +620,24 @@ func intFromUsageMap(u map[string]any, key string) (int, bool) {
 
 // IsToolDiscovered checks if a deferred tool has been discovered for the tape.
 func (a *Agent) IsToolDiscovered(tapeName, toolName string) bool {
-	key := tapeName + ":" + toolName
-	a.mu.RLock()
-	discovered := a.discoveredTools[key]
-	a.mu.RUnlock()
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	discovered := ts.discoveredTools[toolName]
+	ts.mu.Unlock()
 	return discovered
 }
 
 // DiscoverTool marks a tool as discovered for the tape.
 func (a *Agent) DiscoverTool(tapeName, toolName string) {
-	key := tapeName + ":" + toolName
-	a.mu.Lock()
-	a.discoveredTools[key] = true
-	a.mu.Unlock()
-	a.toolsCacheMu.Lock()
-	delete(a.toolsCache, tapeName)
-	a.toolsCacheMu.Unlock()
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	ts.discoveredTools[toolName] = true
+	ts.toolsCache = nil
+	ts.mu.Unlock()
 	if a.config.Verbose >= 1 {
 		slog.Info("agent: tool discovered", "tool", toolName, "tape", tapeName)
 	}
+	a.persistTapeState(tapeName)
 }
 
 // GetAllCoreTools returns all core tools from plugins (cached).
@@ -653,35 +647,33 @@ func (a *Agent) GetAllCoreTools() []*tool.Tool {
 
 // GetAllExtendedTools returns all extended tools from plugins (cached).
 func (a *Agent) GetAllExtendedTools() []*tool.Tool {
-	a.extendedToolsMu.Lock()
-	once := &a.extendedToolsOnce
-	a.extendedToolsMu.Unlock()
+	a.extMu.Lock()
+	defer a.extMu.Unlock()
 
-	once.Do(func() {
-		a.extendedToolsMu.Lock()
+	if !a.extLoaded {
 		a.extendedTools = a.hooks.CollectAllTools(context.Background(), false, true)
+		a.extLoaded = true
 		if a.config.Verbose >= 1 {
 			slog.Info("agent: loaded extended tools", "count", len(a.extendedTools))
 		}
-		a.extendedToolsMu.Unlock()
-	})
+	}
 
-	a.extendedToolsMu.Lock()
-	defer a.extendedToolsMu.Unlock()
 	return a.extendedTools
 }
 
 // InvalidateExtendedTools clears the extended-tool cache so the next discovery
 // reloads tools from plugins (e.g. after a local bridge worker connects).
 func (a *Agent) InvalidateExtendedTools() {
-	a.extendedToolsMu.Lock()
-	a.extendedToolsOnce = sync.Once{}
+	a.extMu.Lock()
+	a.extLoaded = false
 	a.extendedTools = nil
-	a.extendedToolsMu.Unlock()
+	a.extMu.Unlock()
 
-	a.toolsCacheMu.Lock()
-	a.toolsCache = make(map[string][]*tool.Tool)
-	a.toolsCacheMu.Unlock()
+	a.tapeStates.rangeLocked(func(name string, ts *tapeState) {
+		ts.mu.Lock()
+		ts.toolsCache = nil
+		ts.mu.Unlock()
+	})
 
 	if a.config.Verbose >= 1 {
 		slog.Info("agent: invalidated extended tools cache")
@@ -748,20 +740,12 @@ func (a *Agent) Handoff(tapeName, name string, state map[string]any) {
 // This resets the tool discovery state, requiring tools to be re-discovered
 // via toolSearch before they can be used again.
 func (a *Agent) ClearDiscoveredTools(tapeName string) {
-	prefix := tapeName + ":"
-	a.mu.Lock()
-	count := 0
-	for k := range a.discoveredTools {
-		if strings.HasPrefix(k, prefix) {
-			delete(a.discoveredTools, k)
-			count++
-		}
-	}
-	a.mu.Unlock()
-
-	a.toolsCacheMu.Lock()
-	delete(a.toolsCache, tapeName)
-	a.toolsCacheMu.Unlock()
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	count := len(ts.discoveredTools)
+	ts.discoveredTools = make(map[string]bool)
+	ts.toolsCache = nil
+	ts.mu.Unlock()
 
 	if a.config.Verbose >= 1 {
 		slog.Info("agent: cleared discovered tools", "count", count, "tape", tapeName)
@@ -769,4 +753,104 @@ func (a *Agent) ClearDiscoveredTools(tapeName string) {
 
 	// Notify hooks so they can reset per-tape state (e.g. search counters)
 	_ = a.hooks.OnDiscoveredToolsCleared(context.Background(), tapeName)
+	a.persistTapeState(tapeName)
+}
+
+// isChildTape reports whether tapeName belongs to a transient subagent run.
+func isChildTape(tapeName string) bool {
+	return strings.Contains(tapeName, ":"+SubagentTapeSuffix+":")
+}
+
+// persistTapeState writes the current tapeState to an audit-only agent_state entry.
+func (a *Agent) persistTapeState(tapeName string) {
+	if a.tape == nil || a.tape.Store == nil || isChildTape(tapeName) {
+		return
+	}
+
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	discovered := make([]string, 0, len(ts.discoveredTools))
+	for name := range ts.discoveredTools {
+		discovered = append(discovered, name)
+	}
+	sort.Strings(discovered)
+	lastCompact := ts.lastCompactStep
+	modelOverride := ts.modelOverride
+	ts.mu.Unlock()
+
+	payload := map[string]any{
+		"discovered_tools":  discovered,
+		"last_compact_step": lastCompact,
+		"model_override":    modelOverride,
+	}
+	if err := a.tape.AppendEntry(tapeName, tape.NewAgentStateEntry(payload)); err != nil {
+		slog.Warn("agent: failed to persist tape state", "tape", tapeName, "error", err)
+		return
+	}
+	slog.Debug("agent: persisted tape state", "tape", tapeName, "discovered_tools", len(discovered), "last_compact_step", lastCompact, "model_override", modelOverride)
+}
+
+// restoreTapeState scans the tape for the latest agent_state entry and restores
+// discovered tools, last compact step, and model override. It rebuilds the chat
+// client when a model override is present.
+func (a *Agent) restoreTapeState(tapeName string) {
+	if a.tape == nil || a.tape.Store == nil || isChildTape(tapeName) {
+		return
+	}
+
+	entries, err := a.tape.Store.FetchAll(tapeName, nil)
+	if err != nil {
+		slog.Warn("agent: failed to fetch tape for state restore", "tape", tapeName, "error", err)
+		return
+	}
+
+	var latest map[string]any
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == "agent_state" {
+			latest = entries[i].Payload
+			break
+		}
+	}
+	if latest == nil {
+		return
+	}
+
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	if dt, ok := latest["discovered_tools"].([]any); ok {
+		ts.discoveredTools = make(map[string]bool, len(dt))
+		for _, v := range dt {
+			if s, ok := v.(string); ok {
+				ts.discoveredTools[s] = true
+			}
+		}
+		ts.toolsCache = nil
+	} else if dt, ok := latest["discovered_tools"].([]string); ok {
+		ts.discoveredTools = make(map[string]bool, len(dt))
+		for _, s := range dt {
+			ts.discoveredTools[s] = true
+		}
+		ts.toolsCache = nil
+	}
+
+	switch v := latest["last_compact_step"].(type) {
+	case float64:
+		ts.lastCompactStep = int(v)
+	case int:
+		ts.lastCompactStep = v
+	case int64:
+		ts.lastCompactStep = int(v)
+	}
+
+	modelOverride := ""
+	if mo, ok := latest["model_override"].(string); ok {
+		modelOverride = mo
+	}
+	ts.mu.Unlock()
+
+	if modelOverride != "" {
+		if err := a.SwitchModel(tapeName, modelOverride); err != nil {
+			slog.Warn("agent: failed to restore model override", "tape", tapeName, "model", modelOverride, "error", err)
+		}
+	}
 }

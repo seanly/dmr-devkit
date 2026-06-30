@@ -15,7 +15,7 @@ func TestIsContextOverflowError(t *testing.T) {
 }
 
 func TestBuildContinuationPrompt(t *testing.T) {
-	a := &Agent{}
+	a := New(nil, nil, nil, Config{})
 
 	// Test with full info
 	info := &contextOverflowInfo{

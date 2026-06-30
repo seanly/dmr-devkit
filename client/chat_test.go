@@ -766,6 +766,109 @@ func TestStreamStripsThinkTags(t *testing.T) {
 	}
 }
 
+func TestPrepareTruncatesLongHistory(t *testing.T) {
+	fake := &fakeClient{completionQueue: []any{resp("ok")}}
+	cc := newTestChatClient(fake)
+
+	msgs := []map[string]any{
+		{"role": "system", "content": "you are helpful"},
+	}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, map[string]any{"role": "user", "content": strings.Repeat("a", 1000)})
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": strings.Repeat("b", 1000)})
+	}
+	msgs = append(msgs, map[string]any{"role": "user", "content": "current prompt"})
+
+	_, err := cc.Chat(context.Background(), ChatOpts{
+		Messages:     msgs,
+		ContextLimit: 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(fake.calls))
+	}
+	out := fake.calls[0].Messages
+	if len(out) >= len(msgs) {
+		t.Fatalf("expected truncation, got %d messages (before %d)", len(out), len(msgs))
+	}
+	if out[0].Role != "system" || !strings.Contains(out[0].Content, "you are helpful") {
+		t.Errorf("first system message not preserved: %+v", out[0])
+	}
+	last := out[len(out)-1]
+	if last.Role != "user" || last.Content != "current prompt" {
+		t.Errorf("last user message not preserved: %+v", last)
+	}
+}
+
+func TestPrepareNoTruncationWhenContextLimitZero(t *testing.T) {
+	fake := &fakeClient{completionQueue: []any{resp("ok")}}
+	cc := newTestChatClient(fake)
+
+	msgs := []map[string]any{
+		{"role": "system", "content": "you are helpful"},
+		{"role": "user", "content": strings.Repeat("a", 1000)},
+		{"role": "assistant", "content": strings.Repeat("b", 1000)},
+		{"role": "user", "content": "current prompt"},
+	}
+
+	_, err := cc.Chat(context.Background(), ChatOpts{
+		Messages:     msgs,
+		ContextLimit: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls[0].Messages) != len(msgs) {
+		t.Errorf("expected no truncation, got %d messages", len(fake.calls[0].Messages))
+	}
+}
+
+func TestPrepareTruncationPreservesMultiModalParts(t *testing.T) {
+	fake := &fakeClient{completionQueue: []any{resp("ok")}}
+	cc := newTestChatClient(fake)
+
+	msgs := []map[string]any{
+		{"role": "system", "content": "you are helpful"},
+	}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, map[string]any{"role": "user", "content": strings.Repeat("a", 1000)})
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": strings.Repeat("b", 1000)})
+	}
+	msgs = append(msgs, map[string]any{
+		"role":    "user",
+		"content": "current prompt",
+		"parts": []any{
+			map[string]any{"type": "text", "text": "current prompt"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,current-image"}},
+		},
+	})
+
+	_, err := cc.Chat(context.Background(), ChatOpts{
+		Messages:     msgs,
+		ContextLimit: 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := fake.calls[0].Messages
+	last := out[len(out)-1]
+	if last.Role != "user" {
+		t.Fatalf("last message not user: %+v", last)
+	}
+	hasImage := false
+	for _, p := range last.Parts {
+		if img, ok := p.(provider.ImagePart); ok && img.URL == "data:image/png;base64,current-image" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		t.Errorf("current user multi-modal parts not preserved: %#v", last.Parts)
+	}
+}
+
 func TestPrepareStripImageParts(t *testing.T) {
 	fake := &fakeClient{completionQueue: []any{resp("ok")}}
 	cc := newTestChatClient(fake)

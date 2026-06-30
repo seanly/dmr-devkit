@@ -353,7 +353,7 @@ func DefaultHandoffConfig() HandoffConfig {
 		StateEnabled:      &enabled,
 		CompactAfterState: true,
 		CompactRequired:   false,
-		StateUpdate:       "heuristic",
+		StateUpdate:       "llm_extract",
 		MaxArtifacts:      20,
 		MaxActiveFiles:    10,
 	}

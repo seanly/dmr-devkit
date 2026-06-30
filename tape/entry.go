@@ -149,6 +149,11 @@ func NewHandoffPacketEntry(payload map[string]any) TapeEntry {
 	return newEntry("handoff_packet", payload, WithMeta(map[string]any{"schema_version": 1}))
 }
 
+// NewAgentStateEntry stores agent runtime state for restart recovery.
+func NewAgentStateEntry(payload map[string]any, opts ...EntryOption) TapeEntry {
+	return newEntry("agent_state", payload, opts...)
+}
+
 // ToolCallData holds structured data from a tool_call entry payload.
 type ToolCallData struct {
 	ID        string

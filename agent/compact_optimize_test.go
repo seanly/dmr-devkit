@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/seanly/dmr-devkit/tape"
 )
 
 func TestOptimizeMessagesForSummary(t *testing.T) {
@@ -225,5 +227,71 @@ func TestCompressToolOutputs_DoesNotMutateOriginal(t *testing.T) {
 	comp, _ := compressed[0]["content"].(string)
 	if strings.Contains(comp, strings.Repeat("x", 1000)) {
 		t.Error("compressed message still contains full tool output")
+	}
+}
+
+func TestExtractLatestCompactSummaryFromEntries(t *testing.T) {
+	entries := []tape.TapeEntry{
+		tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+		tape.NewCompactSummaryEntry("first summary"),
+		tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}),
+		tape.NewCompactSummaryEntry("latest summary"),
+	}
+
+	got := extractLatestCompactSummaryFromEntries(entries)
+	if got != "latest summary" {
+		t.Errorf("expected 'latest summary', got %q", got)
+	}
+
+	got = extractLatestCompactSummaryFromEntries([]tape.TapeEntry{
+		tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	})
+	if got != "" {
+		t.Errorf("expected empty summary, got %q", got)
+	}
+}
+
+func TestOptimizeEntriesForSummary(t *testing.T) {
+	entries := []tape.TapeEntry{
+		tape.NewCompactSummaryEntry("old summary"),
+		tape.NewMessageEntry(map[string]any{"role": "user", "content": "msg1"}),
+		tape.NewCompactSummaryEntry("latest summary"),
+		tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "msg2"}),
+		tape.NewMessageEntry(map[string]any{"role": "user", "content": "msg3"}),
+	}
+
+	optimized := optimizeEntriesForSummary(entries)
+
+	// First message should be the re-injected previous context summary.
+	if len(optimized) == 0 {
+		t.Fatal("expected at least one optimized message")
+	}
+	first, _ := optimized[0]["content"].(string)
+	if !strings.HasPrefix(first, previousSummaryPrefix) {
+		t.Fatalf("expected first message to start with %q, got %q", previousSummaryPrefix, first)
+	}
+	if !strings.Contains(first, "latest summary") {
+		t.Errorf("previous summary should contain latest summary content; got %q", first)
+	}
+
+	// The optimized stream should not contain any raw compact summaries.
+	for _, msg := range optimized {
+		content, _ := msg["content"].(string)
+		if strings.HasPrefix(content, "[Context Summary]") {
+			t.Errorf("optimized stream should not contain raw [Context Summary]; got %q", content)
+		}
+	}
+
+	// The remaining conversation should be present.
+	found := false
+	for _, msg := range optimized[1:] {
+		content, _ := msg["content"].(string)
+		if strings.Contains(content, "msg3") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("optimized stream should contain newer conversation content")
 	}
 }

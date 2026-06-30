@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seanly/dmr-devkit/agent/toolresult"
 	"github.com/seanly/dmr-devkit/client"
 	"github.com/seanly/dmr-devkit/core"
 	"github.com/seanly/dmr-devkit/provider"
@@ -30,6 +31,12 @@ type runMode struct {
 	// promptParts carries multi-modal content (images) from the caller.
 	// These are included in the tape entry and ChatOpts for the first LLM call.
 	promptParts []provider.ContentPart
+	// toolResultManager isolates large tool-output externalization state for a
+	// subagent run. When nil, the agent's default manager is used.
+	toolResultManager *toolresult.Manager
+	// transient marks a child/subagent tape where persisted state should not be
+	// restored or written (the child tape is discarded after the run).
+	transient bool
 }
 
 // Run executes the agent loop: LLM call -> tool execution -> repeat.
@@ -110,10 +117,14 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	}()
 	// ------------------------------------
 
+	// Restore persisted tape state for restart recovery (skip transient subagent tapes).
+	if mode == nil || !mode.transient {
+		a.restoreTapeState(tapeName)
+	}
+
 	// Auto-apply per-tape model from config (first time only; respects runtime ,model.switch).
-	a.mu.RLock()
-	_, hasOverride := a.modelOverrides[tapeName]
-	a.mu.RUnlock()
+	ts := a.tapeStates.get(tapeName)
+	hasOverride := ts != nil && ts.modelOverride != ""
 	if !hasOverride {
 		if modelName := a.modelNameForTape(tapeName); modelName != "" {
 			if switchErr := a.SwitchModel(tapeName, modelName); switchErr != nil {
@@ -212,12 +223,13 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	histAfter := int(historyAfterEntryID)
 
 	// Record session anchor only if tape has no anchors yet (bootstrap)
-	a.mu.Lock()
-	alreadyStarted := a.sessionStarted[tapeName]
+	ts = a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	alreadyStarted := ts.sessionStarted
 	if !alreadyStarted {
-		a.sessionStarted[tapeName] = true
+		ts.sessionStarted = true
 	}
-	a.mu.Unlock()
+	ts.mu.Unlock()
 	if !alreadyStarted {
 		anchors, _ := a.tape.Store.FetchAll(tapeName, &tape.FetchOpts{Kinds: []string{"anchor"}})
 		if len(anchors) == 0 {
@@ -273,6 +285,10 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			tokensEst = a.estimateContextTokens(tapeName, tapeCtx)
 		}
 		a.recordStepStart(tapeName, execID, step, tokensEst, len(tools))
+		trManager := a.toolResults
+		if mode != nil && mode.toolResultManager != nil {
+			trManager = mode.toolResultManager
+		}
 		opts := client.ChatOpts{
 			Prompt:              currentPrompt,
 			SystemPrompt:        systemPrompt,
@@ -282,7 +298,8 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			Context:             tapeCtx,
 			HistoryAfterEntryID: histAfter,
 			MaxTokens:           a.completionMaxTokensForTape(tapeName),
-			ToolResultManager:   a.toolResults,
+			ToolResultManager:   trManager,
+			ContextLimit:        a.handoffContextLimit(tapeName),
 		}
 		if model := a.GetCurrentModel(tapeName); model != nil && !model.SupportsVision() {
 			opts.StripImageParts = true
@@ -298,10 +315,12 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		// if context is likely to overflow. This is a best-effort optimization.
 		if histAfter <= 0 && a.preemptiveCompactEnabled() {
 			estimatedTokens := a.estimateContextTokens(tapeName, tapeCtx)
+			a.contextBudgetForTape(tapeName).UpdateEstimated(estimatedTokens)
 			if estimatedTokens > 0 && a.shouldAutoHandoffByEstimate(tapeName, estimatedTokens) {
 				slog.Info("compact: preemptive trigger", "estimated_tokens", estimatedTokens)
-
-				if a.shouldCompactNow(tapeName, step, estimatedTokens, a.handoffContextLimit(tapeName)) {
+				limit := a.handoffContextLimit(tapeName)
+				threshold := a.handoffThreshold(tapeName)
+				if a.shouldCompactNow(tapeName, step, estimatedTokens, limit, threshold) {
 					handoffName := fmt.Sprintf("auto:preemptive:%s", time.Now().UTC().Format("20060102-150405"))
 					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "preemptive", step); ok || a.taskStateEnabled() {
 						slog.Info("compact: preemptive handoff done", "anchor", handoffName)
@@ -395,7 +414,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(assistantEntry)); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
 			}
-			a.toolResults.NoteAssistantTurn(tapeName, time.Now())
+			trManager.NoteAssistantTurn(tapeName, time.Now())
 			if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "ok"})); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
 			}
@@ -467,9 +486,9 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					var tInst *tool.Tool
 					if toolName != "" {
 						tInst = toolBy[toolName]
-						th = a.toolResults.EffectiveThreshold(tInst, cfgChars, toolName)
+						th = trManager.EffectiveThreshold(tInst, cfgChars, toolName)
 					}
-					content := a.toolResults.ProcessNew(th, tapeName, callID, toolName, tr)
+					content := trManager.ProcessNew(th, tapeName, callID, toolName, tr)
 					msgs = append(msgs, map[string]any{
 						"role":         "tool",
 						"tool_call_id": callID,
@@ -502,8 +521,8 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				}
 			}
 
-			a.toolResults.NoteAssistantTurn(tapeName, time.Now())
-			for _, r := range a.toolResults.ApplyTurnBudget(tapeName, msgs) {
+			trManager.NoteAssistantTurn(tapeName, time.Now())
+			for _, r := range trManager.ApplyTurnBudget(tapeName, msgs) {
 				if err := a.tape.AppendEntry(tapeName, tape.NewContentReplacementEntry(r.ToolCallID, r.Replacement)); err != nil {
 					slog.Warn("tape append content_replacement failed", "tape", tapeName, "error", err)
 				}
@@ -634,10 +653,11 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			// Proactive auto-handoff: check token usage after tool execution
 			if result.Usage != nil && a.shouldAutoHandoff(tapeName, result.Usage) {
 				pt, _ := intFromUsageMap(result.Usage, "prompt_tokens")
+				a.contextBudgetForTape(tapeName).UpdateReported(pt)
 				limit := a.handoffContextLimit(tapeName)
 				threshold := a.handoffThreshold(tapeName)
 
-				if !a.shouldCompactNow(tapeName, step, pt, limit) {
+				if !a.shouldCompactNow(tapeName, step, pt, limit, threshold) {
 					slog.Warn("compact: skipped (too soon after last compact)", "current_step", step)
 				} else {
 					slog.Info("compact: triggered", "prompt_tokens", pt, "limit", limit, "threshold", threshold, "effective_limit", int(float64(limit)*threshold))

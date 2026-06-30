@@ -24,20 +24,8 @@ func TestNew_CustomMaxSteps(t *testing.T) {
 
 func TestNew_MapsInitialized(t *testing.T) {
 	a := New(nil, nil, nil, Config{})
-	if a.chatClients == nil {
-		t.Error("chatClients not initialized")
-	}
-	if a.sessionStarted == nil {
-		t.Error("sessionStarted not initialized")
-	}
-	if a.modelOverrides == nil {
-		t.Error("modelOverrides not initialized")
-	}
-	if a.lastCompactStep == nil {
-		t.Error("lastCompactStep not initialized")
-	}
-	if a.discoveredTools == nil {
-		t.Error("discoveredTools not initialized")
+	if a.tapeStates.states == nil {
+		t.Error("tapeStates.states not initialized")
 	}
 }
 
@@ -80,9 +68,10 @@ func TestGetCurrentModel_Override(t *testing.T) {
 		{Name: "smart", Model: "m2"},
 	}
 	a := New(nil, nil, nil, Config{Models: models})
-	a.mu.Lock()
-	a.modelOverrides["tape1"] = "smart"
-	a.mu.Unlock()
+	ts := a.tapeStates.getOrCreate("tape1")
+	ts.mu.Lock()
+	ts.modelOverride = "smart"
+	ts.mu.Unlock()
 
 	m := a.GetCurrentModel("tape1")
 	if m == nil || m.Name != "smart" {
@@ -168,34 +157,34 @@ func TestShouldCompactNow(t *testing.T) {
 	a := New(nil, nil, nil, Config{})
 
 	// First call: never compacted, should allow
-	if !a.shouldCompactNow("tape1", 1, 0, 0) {
+	if !a.shouldCompactNow("tape1", 1, 0, 0, 0.8) {
 		t.Error("first compact should be allowed")
 	}
 	a.recordCompactStep("tape1", 1)
 
 	// Step 2: too soon (gap < 3), no token pressure
-	if a.shouldCompactNow("tape1", 2, 0, 0) {
+	if a.shouldCompactNow("tape1", 2, 0, 0, 0.8) {
 		t.Error("step 2 should be blocked (gap < 3)")
 	}
 
 	// Step 4: allowed (gap == 3)
-	if !a.shouldCompactNow("tape1", 4, 0, 0) {
+	if !a.shouldCompactNow("tape1", 4, 0, 0, 0.8) {
 		t.Error("step 4 should be allowed (gap == 3)")
 	}
 	a.recordCompactStep("tape1", 4)
 
 	// Step 1 after 4: wrap around -> reset -> allow
-	if !a.shouldCompactNow("tape1", 1, 0, 0) {
+	if !a.shouldCompactNow("tape1", 1, 0, 0, 0.8) {
 		t.Error("step wrap should allow compact")
 	}
 
 	// Pressure override: step 5 with prompt tokens above threshold should be allowed.
 	a.recordCompactStep("tape1", 4)
-	if !a.shouldCompactNow("tape1", 5, 8500, 10000) {
+	if !a.shouldCompactNow("tape1", 5, 8500, 10000, 0.85) {
 		t.Error("step 5 should be allowed when above threshold with gap >= 1")
 	}
 	// But still blocked on the very next step if pressure is gone.
-	if a.shouldCompactNow("tape1", 5, 0, 10000) {
+	if a.shouldCompactNow("tape1", 5, 0, 10000, 0.85) {
 		t.Error("step 5 should still be blocked without token pressure")
 	}
 }
@@ -281,10 +270,10 @@ func TestChatClientsEviction(t *testing.T) {
 		tape := fmt.Sprintf("tape-%d", i)
 		_ = a.SwitchModel(tape, "m")
 	}
-	a.mu.RLock()
-	sz := len(a.chatClients)
-	a.mu.RUnlock()
+	a.tapeStates.mu.RLock()
+	sz := len(a.tapeStates.states)
+	a.tapeStates.mu.RUnlock()
 	if sz > maxChatClients {
-		t.Fatalf("expected chatClients to be evicted to <= %d, got %d", maxChatClients, sz)
+		t.Fatalf("expected tapeStates to be evicted to <= %d, got %d", maxChatClients, sz)
 	}
 }

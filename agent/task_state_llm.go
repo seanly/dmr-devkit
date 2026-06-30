@@ -27,7 +27,7 @@ func (a *Agent) updateTaskStateAfterToolRound(ctx context.Context, tapeName stri
 	prev := handoff.LatestState(entries)
 	var s handoff.State
 	if a.usesLLMStateExtract() && a.defaultChat != nil {
-		extracted, extractErr := a.extractTaskStateLLM(ctx, prev, entries, step)
+		extracted, extractErr := a.extractTaskStateLLM(ctx, tapeName, prev, entries, step)
 		if extractErr != nil {
 			slog.Warn("task_state llm_extract failed, falling back to heuristic", "error", extractErr)
 			s = a.stateUpdater().UpdateFromToolRound(prev, entries, step, "heuristic")
@@ -40,7 +40,7 @@ func (a *Agent) updateTaskStateAfterToolRound(ctx context.Context, tapeName stri
 	_ = a.appendTaskState(tapeName, s)
 }
 
-func (a *Agent) extractTaskStateLLM(ctx context.Context, prev *handoff.State, entries []tape.TapeEntry, step int) (handoff.State, error) {
+func (a *Agent) extractTaskStateLLM(ctx context.Context, tapeName string, prev *handoff.State, entries []tape.TapeEntry, step int) (handoff.State, error) {
 	base := a.stateUpdater().UpdateFromToolRound(prev, entries, step, "llm_extract")
 	prevJSON, _ := json.Marshal(prev)
 	prompt := fmt.Sprintf(`Previous TaskState (start from this and update it):
@@ -56,6 +56,7 @@ Produce the updated TaskState v1 JSON. Remember: inherit the goal and active con
 		Prompt:       prompt,
 		SystemPrompt: handoff.TaskStateExtractSystemPrompt(),
 		MaxTokens:    800,
+		ContextLimit: a.handoffContextLimit(tapeName),
 	})
 	if err != nil {
 		return base, err

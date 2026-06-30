@@ -20,7 +20,7 @@ func (a *Agent) handoffCfg() config.HandoffConfig {
 		cfg.MaxActiveFiles = 10
 	}
 	if cfg.StateUpdate == "" {
-		cfg.StateUpdate = "heuristic"
+		cfg.StateUpdate = "llm_extract"
 	}
 	return cfg
 }

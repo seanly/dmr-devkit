@@ -72,9 +72,10 @@ func TestToolResultMaxCharsForTape_TapeSpecificOverride(t *testing.T) {
 		},
 	})
 	// Force tape "web" to use modelB.
-	a.mu.Lock()
-	a.modelOverrides["web"] = "modelB"
-	a.mu.Unlock()
+	ts := a.tapeStates.getOrCreate("web")
+	ts.mu.Lock()
+	ts.modelOverride = "modelB"
+	ts.mu.Unlock()
 
 	got := a.toolResultMaxCharsForTape("web")
 	if got != 70000 {

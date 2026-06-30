@@ -2,6 +2,8 @@ package agent
 
 import (
 	"strings"
+
+	"github.com/seanly/dmr-devkit/tape"
 )
 
 const (
@@ -261,4 +263,48 @@ func calculateMessagesSize(messages []map[string]any) int {
 		size += 50
 	}
 	return size
+}
+
+// extractLatestCompactSummaryFromEntries scans tape entries for the latest
+// compact_summary and returns its raw content.
+func extractLatestCompactSummaryFromEntries(entries []tape.TapeEntry) (summary string) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == "compact_summary" {
+			if content, ok := entries[i].Payload["content"].(string); ok {
+				return content
+			}
+		}
+	}
+	return ""
+}
+
+// optimizeEntriesForSummary prepares tape entries for the summarizer LLM.
+// It extracts the latest compact_summary, builds messages from the remaining
+// entries, applies the standard message-level optimizations, and then re-injects
+// the previous summary as the first user message.
+func optimizeEntriesForSummary(entries []tape.TapeEntry) []map[string]any {
+	previousSummary := extractLatestCompactSummaryFromEntries(entries)
+
+	// Drop all compact_summary entries so they are not summarized twice.
+	filtered := make([]tape.TapeEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind == "compact_summary" {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	messages := tape.NewLastAnchorContext().BuildMessages(filtered)
+	optimized := optimizeMessagesForSummary(messages)
+
+	// Re-inject the previous context summary as the first message.
+	if previousSummary != "" {
+		previousSummary = truncateRunes(previousSummary, maxPreviousSummaryRunes) + truncatedMarker
+		optimized = append([]map[string]any{{
+			"role":    previousSummaryRole,
+			"content": previousSummaryPrefix + previousSummary,
+		}}, optimized...)
+	}
+
+	return optimized
 }

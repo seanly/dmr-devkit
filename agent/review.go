@@ -15,16 +15,16 @@ type ReviewDelegate interface {
 }
 
 func (a *Agent) getReviewDelegate() ReviewDelegate {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+	a.cfgMu.Lock()
+	defer a.cfgMu.Unlock()
 	return a.reviewRunner
 }
 
 // SetReviewDelegate wires skill-backed critics for [config.ReviewConfig].Chain.
 func (a *Agent) SetReviewDelegate(d ReviewDelegate) {
-	a.mu.Lock()
+	a.cfgMu.Lock()
 	a.reviewRunner = d
-	a.mu.Unlock()
+	a.cfgMu.Unlock()
 }
 
 func (a *Agent) reviewCfg() config.ReviewConfig {

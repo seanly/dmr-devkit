@@ -25,7 +25,7 @@ func (h *countingHooks) CollectAllTools(_ context.Context, includeCore, includeE
 
 func TestInvalidateExtendedTools(t *testing.T) {
 	h := &countingHooks{}
-	a := &Agent{hooks: h}
+	a := New(nil, nil, h, Config{})
 
 	first := a.GetAllExtendedTools()
 	if len(first) != 1 || h.collectCalls != 1 {
@@ -48,7 +48,7 @@ func TestInvalidateExtendedTools(t *testing.T) {
 
 func TestInvalidateExtendedToolsConcurrent(t *testing.T) {
 	h := &countingHooks{}
-	a := &Agent{hooks: h}
+	a := New(nil, nil, h, Config{})
 	_ = a.GetAllExtendedTools()
 
 	var wg sync.WaitGroup

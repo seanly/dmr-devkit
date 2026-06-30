@@ -47,6 +47,10 @@ type ChatOpts struct {
 	// StripImageParts removes image_url parts from tape history and PromptParts before
 	// the LLM request (tape on disk is unchanged). Set when the target model does not support vision.
 	StripImageParts bool
+	// ContextLimit, if > 0, triggers final truncation of prepared messages so that the
+	// estimated token count stays below 95% of the limit. The first system message and
+	// the last user message are always preserved.
+	ContextLimit int
 }
 
 // StreamState holds the accumulated state from a streaming response.
@@ -526,6 +530,9 @@ func (c *ChatClient) prepare(opts ChatOpts) (*preparedChat, error) {
 		msgs = provider.StripImagePartsFromMessages(msgs)
 	}
 	p.messages = collapseSystemMessages(msgs)
+	if opts.ContextLimit > 0 {
+		p.messages = truncateMessagesToLimit(p.messages, opts.ContextLimit)
+	}
 
 	// Normalize tools
 	if len(opts.Tools) > 0 {
