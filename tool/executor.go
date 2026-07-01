@@ -38,13 +38,9 @@ type ToolExecutor struct {
 	// arguments may be executed within a single agent run. Zero disables the
 	// duplicate guard.
 	MaxDuplicateToolCalls int
-	// MaxTotalToolCalls limits the total number of tool calls in a single agent
-	// run. Zero disables the total guard.
-	MaxTotalToolCalls int
 
-	mu          sync.Mutex
-	dupCounts   map[string]int // key: tapeName + "\x00" + toolName + "\x00" + argsJSON
-	totalCounts map[string]int // key: tapeName
+	mu        sync.Mutex
+	dupCounts map[string]int // key: tapeName + "\x00" + toolName + "\x00" + argsJSON
 }
 
 // resolvedCall holds a validated and parsed tool call.
@@ -56,8 +52,7 @@ type resolvedCall struct {
 
 func NewToolExecutor() *ToolExecutor {
 	return &ToolExecutor{
-		dupCounts:   make(map[string]int),
-		totalCounts: make(map[string]int),
+		dupCounts: make(map[string]int),
 	}
 }
 
@@ -72,11 +67,11 @@ func (e *ToolExecutor) ResetBudget(tapeName string) {
 			delete(e.dupCounts, k)
 		}
 	}
-	delete(e.totalCounts, tapeName)
+	delete(e.dupCounts, tapeName)
 }
 
-// checkBudget enforces MaxTotalToolCalls and MaxDuplicateToolCalls per tape.
-// It mutates resolved[i].err to deny calls that exceed the configured budgets.
+// checkBudget checks per-run duplicate tool-call budgets before execution and
+// mutates resolved[i].err to deny calls that exceed the duplicate limit.
 func (e *ToolExecutor) checkBudget(calls []core.ToolCallData, resolved []resolvedCall, ctx *ToolContext) {
 	tapeName := ""
 	if ctx != nil {
@@ -85,23 +80,6 @@ func (e *ToolExecutor) checkBudget(calls []core.ToolCallData, resolved []resolve
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	if e.MaxTotalToolCalls > 0 {
-		total := e.totalCounts[tapeName] + len(calls)
-		if total > e.MaxTotalToolCalls {
-			for i := range calls {
-				if resolved[i].err == nil {
-					resolved[i].err = &core.ErrorPayload{
-						Kind:    core.ErrDenied,
-						Message: fmt.Sprintf("total tool call budget exceeded (%d/%d); stop calling tools and produce a final answer", e.totalCounts[tapeName], e.MaxTotalToolCalls),
-					}
-				}
-			}
-			e.totalCounts[tapeName] = total
-			return
-		}
-		e.totalCounts[tapeName] = total
-	}
 
 	if e.MaxDuplicateToolCalls <= 0 {
 		return

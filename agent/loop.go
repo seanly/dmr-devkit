@@ -105,7 +105,6 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	_ = tc.RecordExecState(tapeName, execID, tape.ExecStatePending)
 	if a.executor != nil {
 		a.executor.MaxDuplicateToolCalls = a.config.MaxDuplicateToolCalls
-		a.executor.MaxTotalToolCalls = a.config.MaxTotalToolCalls
 		a.executor.ResetBudget(tapeName)
 	}
 	defer func() {

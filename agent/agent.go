@@ -55,9 +55,6 @@ type Config struct {
 	// MaxDuplicateToolCalls limits how many times the same tool with the same
 	// arguments may be executed within a single agent run. Zero disables the guard.
 	MaxDuplicateToolCalls int
-	// MaxTotalToolCalls limits the total number of tool calls in a single agent
-	// run. Zero disables the guard.
-	MaxTotalToolCalls int
 }
 
 // Agent orchestrates multi-turn LLM + tool execution.
@@ -117,9 +114,6 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 	}
 	if cfg.MaxDuplicateToolCalls == 0 {
 		cfg.MaxDuplicateToolCalls = 2
-	}
-	if cfg.MaxTotalToolCalls == 0 {
-		cfg.MaxTotalToolCalls = 20
 	}
 	if hooks == nil {
 		hooks = noopHooks{}

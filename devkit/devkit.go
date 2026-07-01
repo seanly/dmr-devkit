@@ -89,9 +89,6 @@ type Options struct {
 	// MaxDuplicateToolCalls limits repeated identical tool calls within a single
 	// agent run. Zero uses the agent default (2).
 	MaxDuplicateToolCalls int
-	// MaxTotalToolCalls limits the total tool calls within a single agent run.
-	// Zero uses the agent default (20).
-	MaxTotalToolCalls int
 
 	// AgentPolicy is optional policy (handoff, token limits, etc.).
 	AgentPolicy config.AgentConfig
@@ -300,7 +297,6 @@ func Build(ctx context.Context, opts Options) (*Kit, error) {
 	agCfg := agent.Config{
 		MaxSteps:              maxSteps,
 		MaxDuplicateToolCalls: opts.MaxDuplicateToolCalls,
-		MaxTotalToolCalls:     opts.MaxTotalToolCalls,
 		AgentPolicy:           opts.AgentPolicy,
 		SystemPrompt:          systemPrompt,
 		SystemPromptBase:      finalBase,

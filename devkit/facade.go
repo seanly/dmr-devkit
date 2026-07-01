@@ -22,8 +22,6 @@ type QuickAgentConfig struct {
 	MaxSteps int
 	// MaxDuplicateToolCalls limits repeated identical tool calls. Zero uses the default (2).
 	MaxDuplicateToolCalls int
-	// MaxTotalToolCalls limits total tool calls. Zero uses the default (20).
-	MaxTotalToolCalls int
 
 	Workspace         string
 	SystemPrompt      string
@@ -45,7 +43,6 @@ func QuickAgent(ctx context.Context, cfg QuickAgentConfig) (*agent.Agent, error)
 		Tools:                 cfg.Tools,
 		MaxSteps:              cfg.MaxSteps,
 		MaxDuplicateToolCalls: cfg.MaxDuplicateToolCalls,
-		MaxTotalToolCalls:     cfg.MaxTotalToolCalls,
 		Workspace:             cfg.Workspace,
 		SystemPromptBase:      cfg.SystemPrompt,
 		SystemPromptExtra:     cfg.SystemPromptExtra,
@@ -96,7 +93,6 @@ func QuickCrew(ctx context.Context, cfg QuickCrewConfig, task string) (*agent.Re
 			Tools:                 ac.Tools,
 			MaxSteps:              ac.MaxSteps,
 			MaxDuplicateToolCalls: ac.MaxDuplicateToolCalls,
-			MaxTotalToolCalls:     ac.MaxTotalToolCalls,
 			Workspace:             ac.Workspace,
 			SystemPromptBase:      ac.SystemPrompt,
 			SystemPromptExtra:     ac.SystemPromptExtra,
