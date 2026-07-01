@@ -41,10 +41,11 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 	}
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
-		Tape:       tapeName,
-		AnchorName: "handoff/tool",
-		EventName:  "handoff/tool",
-		Summarizer: a.buildSummarizer(tapeName, focus),
+		Tape:           tapeName,
+		AnchorName:     "handoff/tool",
+		EventName:      "handoff/tool",
+		SummaryVersion: a.compactSummaryVersion(),
+		Summarizer:     a.buildSummarizer(tapeName, focus),
 	})
 	if err != nil {
 		slog.Error("compact: focused summarization failed", "error", err)
@@ -79,6 +80,16 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 	return "", nil
 }
 
+// compactSummaryVersion returns the configured compact_summary schema version,
+// falling back to the tape default if unset.
+func (a *Agent) compactSummaryVersion() int {
+	version := a.handoffCfg().CompactSummaryVersion
+	if version <= 0 {
+		version = tape.CompactSummarySchemaVersion
+	}
+	return version
+}
+
 func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string) (string, error) {
 	slog.Info("compact: starting summarization", "tape", tapeName)
 
@@ -95,9 +106,10 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 	}
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
-		Tape:       tapeName,
-		AnchorName: anchorName,
-		Summarizer: a.buildSummarizer(tapeName, focus),
+		Tape:           tapeName,
+		AnchorName:     anchorName,
+		SummaryVersion: a.compactSummaryVersion(),
+		Summarizer:     a.buildSummarizer(tapeName, focus),
 	})
 	if err != nil {
 		slog.Error("compact: summarization failed", "error", err)

@@ -10,6 +10,9 @@ import (
 
 // RunBaselineFixtures runs all bundled fixtures under dir and returns pass count.
 func RunBaselineFixtures(dir string) (passed, total int, cards []*ScoreCard, err error) {
+	if _, statErr := os.Stat(dir); statErr != nil {
+		return 0, 0, nil, fmt.Errorf("fixture directory unavailable: %w", statErr)
+	}
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return 0, 0, nil, err

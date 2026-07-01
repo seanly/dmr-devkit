@@ -76,10 +76,10 @@ func defaultBuildMessages(entries []TapeEntry) []map[string]any {
 				messages = append(messages, map[string]any{"role": "system", "content": content})
 			}
 		case "compact_summary":
-			if content, ok := e.Payload["content"].(string); ok {
+			if summary, ok := ExtractCompactSummary(e.Payload); ok {
 				messages = append(messages, map[string]any{
 					"role":         "system",
-					"content":      content,
+					"content":      summary.Content,
 					"context_kind": "compact_summary",
 				})
 			}

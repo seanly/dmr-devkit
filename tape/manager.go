@@ -138,10 +138,11 @@ func (m *TapeManager) RecordChat(opts RecordChatOpts) {
 
 // CompactOpts holds options for compacting a tape.
 type CompactOpts struct {
-	Tape       string
-	AnchorName string // optional, defaults to compact:<timestamp>
-	EventName  string // optional, defaults to "compact"
-	Summarizer func(ctx context.Context, messages []map[string]any) (string, error)
+	Tape           string
+	AnchorName     string // optional, defaults to compact:<timestamp>
+	EventName      string // optional, defaults to "compact"
+	SummaryVersion int    // 0 means use default CompactSummarySchemaVersion
+	Summarizer     func(ctx context.Context, messages []map[string]any) (string, error)
 }
 
 // Compact generates a summary of the current tape context and creates a compact anchor.
@@ -188,7 +189,11 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	}
 
 	// 5. Create compact_summary entry (independent entry after anchor)
-	summaryEntry := NewCompactSummaryEntry(summary)
+	summaryVersion := opts.SummaryVersion
+	if summaryVersion <= 0 {
+		summaryVersion = CompactSummarySchemaVersion
+	}
+	summaryEntry := NewCompactSummaryEntryWithVersion(summary, summaryVersion)
 	if err := m.Store.Append(opts.Tape, summaryEntry); err != nil {
 		return nil, fmt.Errorf("append compact summary: %w", err)
 	}

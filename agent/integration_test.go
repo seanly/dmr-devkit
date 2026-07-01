@@ -209,6 +209,9 @@ func TestLongSessionWithCompact(t *testing.T) {
 			anchors++
 		case "compact_summary":
 			compactSummaries++
+			if got := e.Payload["schema_version"]; got != tape.CompactSummarySchemaVersion {
+				t.Errorf("compact_summary schema_version = %v, want %d", got, tape.CompactSummarySchemaVersion)
+			}
 		}
 	}
 	if anchors == 0 {

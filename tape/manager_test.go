@@ -1,6 +1,7 @@
 package tape
 
 import (
+	"context"
 	"testing"
 
 	"github.com/seanly/dmr-devkit/core"
@@ -164,5 +165,48 @@ func TestRecordChatWithError(t *testing.T) {
 	data, _ := runEvent.Payload["data"].(map[string]any)
 	if data["status"] != "error" {
 		t.Error("status should be error when ErrorPayload is set")
+	}
+}
+
+func TestCompact_WritesConfiguredSummaryVersion(t *testing.T) {
+	store := NewInMemoryTapeStore()
+	mgr := NewTapeManager(store)
+
+	_ = store.Append("test_tape", NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+
+	created, err := mgr.Compact(context.Background(), CompactOpts{
+		Tape:           "test_tape",
+		AnchorName:     "test:compact",
+		SummaryVersion: 2,
+		Summarizer: func(ctx context.Context, messages []map[string]any) (string, error) {
+			return "test summary", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(created) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(created))
+	}
+	if created[1].Kind != "compact_summary" {
+		t.Fatalf("expected compact_summary entry, got %q", created[1].Kind)
+	}
+	if got := created[1].Payload["schema_version"]; got != 2 {
+		t.Errorf("payload schema_version = %v, want 2", got)
+	}
+	if got := created[1].Meta["schema_version"]; got != 2 {
+		t.Errorf("meta schema_version = %v, want 2", got)
+	}
+
+	// Default version when SummaryVersion is 0.
+	created2, err := mgr.Compact(context.Background(), CompactOpts{
+		Tape:       "test_tape",
+		Summarizer: func(ctx context.Context, messages []map[string]any) (string, error) { return "v1 summary", nil },
+	})
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if got := created2[1].Payload["schema_version"]; got != CompactSummarySchemaVersion {
+		t.Errorf("default schema_version = %v, want %d", got, CompactSummarySchemaVersion)
 	}
 }

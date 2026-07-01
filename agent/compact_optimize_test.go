@@ -251,6 +251,29 @@ func TestExtractLatestCompactSummaryFromEntries(t *testing.T) {
 	}
 }
 
+func TestExtractLatestCompactSummaryFromEntries_Versioned(t *testing.T) {
+	entries := []tape.TapeEntry{
+		tape.NewCompactSummaryEntryWithVersion("first summary", 1),
+		tape.NewCompactSummaryEntryWithVersion("latest summary", 2),
+	}
+
+	got := extractLatestCompactSummaryFromEntries(entries)
+	if got != "latest summary" {
+		t.Errorf("expected 'latest summary', got %q", got)
+	}
+}
+
+func TestExtractLatestCompactSummaryFromEntries_LegacyBackwardCompatible(t *testing.T) {
+	entries := []tape.TapeEntry{
+		tape.TapeEntry{Kind: "compact_summary", Payload: map[string]any{"content": "legacy summary"}},
+	}
+
+	got := extractLatestCompactSummaryFromEntries(entries)
+	if got != "legacy summary" {
+		t.Errorf("expected 'legacy summary', got %q", got)
+	}
+}
+
 func TestOptimizeEntriesForSummary(t *testing.T) {
 	entries := []tape.TapeEntry{
 		tape.NewCompactSummaryEntry("old summary"),

@@ -156,9 +156,10 @@ func TestBuildMessagesInjectsCompleteTaskState(t *testing.T) {
 }
 
 func TestBuildMessagesCompactSummaryHasNoPrefixAndContextKind(t *testing.T) {
+	entry := NewCompactSummaryEntry("previous summary text")
 	ctx := NewNoAnchorContext()
 	entries := []TapeEntry{
-		NewCompactSummaryEntry("previous summary text"),
+		entry,
 		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
 	}
 	msgs := ctx.BuildMessages(entries)
@@ -174,6 +175,53 @@ func TestBuildMessagesCompactSummaryHasNoPrefixAndContextKind(t *testing.T) {
 	}
 	if content != "previous summary text" {
 		t.Errorf("compact_summary content = %q, want %q", content, "previous summary text")
+	}
+	if msgs[0]["context_kind"] != "compact_summary" {
+		t.Fatalf("expected context_kind=compact_summary, got %v", msgs[0]["context_kind"])
+	}
+	if entry.Payload["schema_version"] != CompactSummarySchemaVersion {
+		t.Errorf("expected schema_version %d on created entry, got %v", CompactSummarySchemaVersion, entry.Payload["schema_version"])
+	}
+}
+
+func TestBuildMessagesCompactSummaryV1Unchanged(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	entries := []TapeEntry{
+		NewCompactSummaryEntryWithVersion("versioned summary", 1),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 2 {
+		t.Fatalf("expected compact_summary + message, got %d", len(msgs))
+	}
+	if msgs[0]["role"] != "system" {
+		t.Fatalf("compact_summary role = %v", msgs[0]["role"])
+	}
+	content, _ := msgs[0]["content"].(string)
+	if strings.Contains(content, "[Context Summary]") {
+		t.Errorf("versioned compact_summary should not contain legacy prefix; got %q", content)
+	}
+	if content != "versioned summary" {
+		t.Errorf("compact_summary content = %q, want %q", content, "versioned summary")
+	}
+	if msgs[0]["context_kind"] != "compact_summary" {
+		t.Fatalf("expected context_kind=compact_summary, got %v", msgs[0]["context_kind"])
+	}
+}
+
+func TestBuildMessagesCompactSummaryLegacyBackwardCompatible(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	entries := []TapeEntry{
+		{Kind: "compact_summary", Payload: map[string]any{"content": "legacy summary"}},
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 2 {
+		t.Fatalf("expected compact_summary + message, got %d", len(msgs))
+	}
+	content, _ := msgs[0]["content"].(string)
+	if content != "legacy summary" {
+		t.Errorf("legacy compact_summary content = %q, want %q", content, "legacy summary")
 	}
 	if msgs[0]["context_kind"] != "compact_summary" {
 		t.Fatalf("expected context_kind=compact_summary, got %v", msgs[0]["context_kind"])

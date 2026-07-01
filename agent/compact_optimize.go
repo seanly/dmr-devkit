@@ -270,8 +270,8 @@ func calculateMessagesSize(messages []map[string]any) int {
 func extractLatestCompactSummaryFromEntries(entries []tape.TapeEntry) (summary string) {
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].Kind == "compact_summary" {
-			if content, ok := entries[i].Payload["content"].(string); ok {
-				return content
+			if data, ok := tape.ExtractCompactSummary(entries[i].Payload); ok {
+				return data.Content
 			}
 		}
 	}

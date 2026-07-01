@@ -330,12 +330,13 @@ type AgentConfig struct {
 
 // HandoffConfig controls TaskState snapshots and compact ordering.
 type HandoffConfig struct {
-	StateEnabled      *bool  `toml:"state_enabled,omitempty"`
-	CompactAfterState bool   `toml:"compact_after_state"`
-	CompactRequired   bool   `toml:"compact_required"`
-	StateUpdate       string `toml:"state_update"` // heuristic | llm_extract
-	MaxArtifacts      int    `toml:"max_artifacts"`
-	MaxActiveFiles    int    `toml:"max_active_files"`
+	StateEnabled          *bool  `toml:"state_enabled,omitempty"`
+	CompactAfterState     bool   `toml:"compact_after_state"`
+	CompactRequired       bool   `toml:"compact_required"`
+	StateUpdate           string `toml:"state_update"` // heuristic | llm_extract
+	MaxArtifacts          int    `toml:"max_artifacts"`
+	MaxActiveFiles        int    `toml:"max_active_files"`
+	CompactSummaryVersion int    `toml:"compact_summary_version,omitempty"`
 }
 
 // StateEnabledOrDefault returns whether structured task state is on (default true).
@@ -350,12 +351,13 @@ func (h HandoffConfig) StateEnabledOrDefault() bool {
 func DefaultHandoffConfig() HandoffConfig {
 	enabled := true
 	return HandoffConfig{
-		StateEnabled:      &enabled,
-		CompactAfterState: true,
-		CompactRequired:   false,
-		StateUpdate:       "llm_extract",
-		MaxArtifacts:      20,
-		MaxActiveFiles:    10,
+		StateEnabled:          &enabled,
+		CompactAfterState:     true,
+		CompactRequired:       false,
+		StateUpdate:           "llm_extract",
+		MaxArtifacts:          20,
+		MaxActiveFiles:        10,
+		CompactSummaryVersion: 1,
 	}
 }
 

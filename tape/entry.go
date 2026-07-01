@@ -134,9 +134,23 @@ func NewEventEntry(name string, data map[string]any, opts ...EntryOption) TapeEn
 	return newEntry("event", map[string]any{"name": name, "data": data}, opts...)
 }
 
+// CompactSummarySchemaVersion is the current schema version for compact_summary entries.
+const CompactSummarySchemaVersion = 1
+
 // NewCompactSummaryEntry creates a compact_summary entry storing an LLM-generated context summary.
+// It defaults to CompactSummarySchemaVersion.
 func NewCompactSummaryEntry(summary string) TapeEntry {
-	return newEntry("compact_summary", map[string]any{"content": summary})
+	return NewCompactSummaryEntryWithVersion(summary, CompactSummarySchemaVersion)
+}
+
+// NewCompactSummaryEntryWithVersion creates a compact_summary entry with an explicit schema version.
+func NewCompactSummaryEntryWithVersion(summary string, version int) TapeEntry {
+	payload := map[string]any{
+		"content":        summary,
+		"schema_version": version,
+	}
+	return newEntry("compact_summary", payload,
+		WithMeta(map[string]any{"schema_version": version}))
 }
 
 // NewTaskStateEntry stores structured task state (HandoffState v1).
