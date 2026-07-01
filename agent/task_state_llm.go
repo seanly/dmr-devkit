@@ -52,18 +52,21 @@ Recent tape activity since the previous state:
 Produce the updated TaskState v1 JSON. Remember: inherit the goal and active constraints unless the user explicitly changed them; preserve pending items unless they are completed or cancelled; mark completed work as done; record the latest last_action and active files.`,
 		string(prevJSON), handoff.FormatRecentEntries(entries, 15))
 
-	raw, err := a.defaultChat.Chat(ctx, client.ChatOpts{
-		Prompt:       prompt,
-		SystemPrompt: handoff.TaskStateExtractSystemPrompt(),
-		MaxTokens:    800,
-		ContextLimit: a.handoffContextLimit(tapeName),
-	})
+	raw, err := a.extractTaskStateLLMRaw(ctx, tapeName, prompt, 2000)
 	if err != nil {
 		return base, err
 	}
 	out, err := handoff.ParseStateJSON(raw, base)
 	if err != nil {
-		return base, err
+		// Retry once with a larger budget in case the JSON was truncated.
+		raw, err = a.extractTaskStateLLMRaw(ctx, tapeName, prompt, 4000)
+		if err != nil {
+			return base, err
+		}
+		out, err = handoff.ParseStateJSON(raw, base)
+		if err != nil {
+			return base, err
+		}
 	}
 	out.SchemaVersion = handoff.SchemaVersion
 	out.Source = "llm_extract"
@@ -72,4 +75,13 @@ Produce the updated TaskState v1 JSON. Remember: inherit the goal and active con
 		return base, err
 	}
 	return out, nil
+}
+
+func (a *Agent) extractTaskStateLLMRaw(ctx context.Context, tapeName, prompt string, maxTokens int) (string, error) {
+	return a.defaultChat.Chat(ctx, client.ChatOpts{
+		Prompt:       prompt,
+		SystemPrompt: handoff.TaskStateExtractSystemPrompt(),
+		MaxTokens:    maxTokens,
+		ContextLimit: a.handoffContextLimit(tapeName),
+	})
 }
