@@ -12,6 +12,71 @@ import (
 	"github.com/seanly/dmr-devkit/tape"
 )
 
+// CompactQuality rates how well a summary preserves critical task state.
+type CompactQuality int
+
+const (
+	CompactQualityUnknown CompactQuality = iota
+	CompactQualityGood
+	CompactQualityFair
+	CompactQualityPoor
+)
+
+// evaluateCompactSummary checks whether the summary preserves the goal, constraints,
+// pending items, and active files from the task state. It returns Good/Fair/Poor.
+func evaluateCompactSummary(summary string, state *handoff.State) CompactQuality {
+	if state == nil || state.Goal == "" {
+		// Nothing critical to preserve; accept the summary.
+		return CompactQualityGood
+	}
+	s := strings.ToLower(summary)
+	score := 0
+	checks := 0
+
+	// Goal preservation (heuristic substring match; lightweight).
+	if strings.Contains(s, strings.ToLower(state.Goal)) {
+		score += 2
+	}
+	checks += 2
+
+	// Constraint preservation.
+	for k, v := range state.Constraints {
+		if strings.Contains(s, strings.ToLower(k)) || strings.Contains(s, strings.ToLower(v)) {
+			score++
+		}
+		checks++
+	}
+
+	// Pending items preservation.
+	for _, p := range state.Pending {
+		if strings.Contains(s, strings.ToLower(p.Summary)) {
+			score++
+		}
+		checks++
+	}
+
+	// Active files preservation.
+	for _, f := range state.ActiveFiles {
+		if strings.Contains(s, strings.ToLower(f)) {
+			score++
+		}
+		checks++
+	}
+
+	if checks == 0 {
+		return CompactQualityGood
+	}
+	ratio := float64(score) / float64(checks)
+	switch {
+	case ratio >= 0.7:
+		return CompactQualityGood
+	case ratio >= 0.4:
+		return CompactQualityFair
+	default:
+		return CompactQualityPoor
+	}
+}
+
 // CompactTape compacts the current tape context into a summary and returns the summary text.
 func (a *Agent) CompactTape(ctx context.Context, tapeName string) (string, error) {
 	return a.compact(ctx, tapeName, "", "")
@@ -30,14 +95,21 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 
 	if !a.llmCompactEnabled() {
 		// Even without LLM summarization, a handoff is a context reset.
-		if a.clearToolsOnCompact() {
-			a.ClearDiscoveredTools(tapeName)
-			if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
-				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
-			}
+		a.clearDiscoveredToolsWithReason(tapeName, "handoff")
+		if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
+			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
 		}
 		slog.Info("compact: skipped LLM summary (minimal profile)")
 		return "", nil
+	}
+
+	summary, quality, judgePass, err := a.generateCompactSummary(ctx, tapeName, focus)
+	if err != nil {
+		slog.Error("compact: focused summarization failed", "error", err)
+		return "", err
+	}
+	if quality == CompactQualityPoor {
+		slog.Warn("compact: focused summary quality is poor, falling back to raw-message retention", "tape", tapeName, "judge", judgePass)
 	}
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
@@ -45,7 +117,8 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 		AnchorName:     "handoff/tool",
 		EventName:      "handoff/tool",
 		SummaryVersion: a.compactSummaryVersion(),
-		Summarizer:     a.buildSummarizer(tapeName, focus),
+		Summary:        summary,
+		Quality:        quality.String(),
 	})
 	if err != nil {
 		slog.Error("compact: focused summarization failed", "error", err)
@@ -56,23 +129,11 @@ func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string
 			continue
 		}
 		if c, ok := e.Payload["content"].(string); ok {
-			slog.Info("compact: focused summary generated", "chars", len(c), "summary", c)
-			if a.summaryJudgeEnabled() {
-				entries, _ := a.tape.Store.FetchAll(tapeName, nil)
-				st := handoff.LatestState(entries)
-				pass := validateCompactSummary(st, c)
-				judgePass := pass
-				a.recordCompactEvent(tapeName, true, len(c), &judgePass)
-				if !pass {
-					slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
-				}
-			}
-			// Only reset plugin/discovered-tool state after a successful compact.
-			if a.clearToolsOnCompact() {
-				a.ClearDiscoveredTools(tapeName)
-				if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
-					slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
-				}
+			slog.Info("compact: focused summary generated", "chars", len(c), "quality", quality.String(), "summary", c)
+			// Reset discovered-tool state after a successful compact and notify plugins.
+			a.clearDiscoveredToolsWithReason(tapeName, "handoff")
+			if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
+				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
 			}
 			return c, nil
 		}
@@ -90,29 +151,61 @@ func (a *Agent) compactSummaryVersion() int {
 	return version
 }
 
+// generateCompactSummary produces a summary, evaluates its quality, and records the
+// compact event if the adversarial judge is enabled. It returns the summary text,
+// the heuristic quality rating, and the adversarial judge result.
+func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus string) (string, CompactQuality, bool, error) {
+	summarizer := a.buildSummarizer(tapeName, focus)
+	summary, err := summarizer(ctx, nil)
+	if err != nil {
+		return "", CompactQualityUnknown, false, err
+	}
+
+	entries, _ := a.tape.Store.FetchAll(tapeName, nil)
+	st := handoff.LatestState(entries)
+	quality := evaluateCompactSummary(summary, st)
+	judgePass := true
+	if a.summaryJudgeEnabled() {
+		judgePass = validateCompactSummary(st, summary)
+		a.recordCompactEvent(tapeName, true, len(summary), &judgePass, quality)
+		if !judgePass {
+			slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
+		}
+	}
+	return summary, quality, judgePass, nil
+}
+
 func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string) (string, error) {
 	slog.Info("compact: starting summarization", "tape", tapeName)
 
 	if !a.llmCompactEnabled() {
 		// Even without LLM summarization, a compact is a context reset.
-		if a.clearToolsOnCompact() {
-			a.ClearDiscoveredTools(tapeName)
-			if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
-				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
-			}
+		a.clearDiscoveredToolsWithReason(tapeName, "compact")
+		if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
 		}
 		slog.Info("compact: skipped LLM summary (minimal profile)")
 		return "", nil
+	}
+
+	summary, quality, judgePass, err := a.generateCompactSummary(ctx, tapeName, focus)
+	if err != nil {
+		slog.Error("compact: summarization failed", "error", err)
+		return "", err
+	}
+	if quality == CompactQualityPoor {
+		slog.Warn("compact: summary quality is poor, falling back to raw-message retention", "tape", tapeName, "judge", judgePass)
 	}
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
 		Tape:           tapeName,
 		AnchorName:     anchorName,
 		SummaryVersion: a.compactSummaryVersion(),
-		Summarizer:     a.buildSummarizer(tapeName, focus),
+		Summary:        summary,
+		Quality:        quality.String(),
 	})
 	if err != nil {
-		slog.Error("compact: summarization failed", "error", err)
+		slog.Error("compact: failed to write compact entries", "error", err)
 		return "", err
 	}
 	for _, e := range entries {
@@ -120,23 +213,11 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 			continue
 		}
 		if c, ok := e.Payload["content"].(string); ok {
-			slog.Info("compact: summary generated", "chars", len(c), "summary", c)
-			if a.summaryJudgeEnabled() {
-				entries, _ := a.tape.Store.FetchAll(tapeName, nil)
-				st := handoff.LatestState(entries)
-				pass := validateCompactSummary(st, c)
-				judgePass := pass
-				a.recordCompactEvent(tapeName, true, len(c), &judgePass)
-				if !pass {
-					slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
-				}
-			}
-			// Only reset plugin/discovered-tool state after a successful compact.
-			if a.clearToolsOnCompact() {
-				a.ClearDiscoveredTools(tapeName)
-				if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
-					slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
-				}
+			slog.Info("compact: summary generated", "chars", len(c), "quality", quality.String(), "summary", c)
+			// Reset discovered-tool state after a successful compact and notify plugins.
+			a.clearDiscoveredToolsWithReason(tapeName, "compact")
+			if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
 			}
 			return c, nil
 		}
@@ -156,7 +237,9 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 				entries, err = a.tape.Store.FetchAll(tapeName, nil)
 			}
 			if err == nil && len(entries) > 0 {
-				optimized = optimizeEntriesForSummary(entries)
+				summarizerCtx := tape.NewLastAnchorContext()
+				summarizerCtx.Strategy = config.CompactStrategySummary
+				optimized = optimizeEntriesForSummary(entries, summarizerCtx)
 			}
 		}
 		if optimized == nil {

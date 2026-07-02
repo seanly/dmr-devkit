@@ -95,6 +95,83 @@ func (m FTS5Mode) MarshalText() ([]byte, error) {
 	return []byte(m.String()), nil
 }
 
+// CompactStrategy selects how tape entries are turned into LLM messages.
+type CompactStrategy struct {
+	value string // "summary", "snip", "collapse", "hybrid"
+}
+
+var (
+	// CompactStrategySummary keeps the existing behavior (identity transform).
+	// It is the zero value of CompactStrategy.
+	CompactStrategySummary = CompactStrategy{}
+	// CompactStrategySnip drops empty messages and duplicate system prompts.
+	CompactStrategySnip = CompactStrategy{value: "snip"}
+	// CompactStrategyCollapse merges adjacent same-role messages.
+	CompactStrategyCollapse = CompactStrategy{value: "collapse"}
+	// CompactStrategyHybrid applies snip then collapse.
+	CompactStrategyHybrid = CompactStrategy{value: "hybrid"}
+)
+
+// NewCompactStrategy creates a CompactStrategy from a string. Unrecognized values default to Summary.
+func NewCompactStrategy(s string) CompactStrategy {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "snip":
+		return CompactStrategySnip
+	case "collapse":
+		return CompactStrategyCollapse
+	case "hybrid":
+		return CompactStrategyHybrid
+	default:
+		return CompactStrategySummary
+	}
+}
+
+// String returns the canonical string representation.
+func (c CompactStrategy) String() string {
+	if c.value == "" {
+		return "summary"
+	}
+	return c.value
+}
+
+// IsSummary returns whether the strategy is the default summary/identity transform.
+func (c CompactStrategy) IsSummary() bool { return c.value == "" || c.value == "summary" }
+
+// IsSnip returns whether the strategy is snip.
+func (c CompactStrategy) IsSnip() bool { return c.value == "snip" }
+
+// IsCollapse returns whether the strategy is collapse.
+func (c CompactStrategy) IsCollapse() bool { return c.value == "collapse" }
+
+// IsHybrid returns whether the strategy is hybrid.
+func (c CompactStrategy) IsHybrid() bool { return c.value == "hybrid" }
+
+// MarshalText implements encoding.TextMarshaler.
+func (c CompactStrategy) MarshalText() ([]byte, error) {
+	return []byte(c.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (c *CompactStrategy) UnmarshalText(text []byte) error {
+	*c = NewCompactStrategy(string(text))
+	return nil
+}
+
+// UnmarshalTOML implements the go-toml/v2 Unmarshaler interface.
+func (c *CompactStrategy) UnmarshalTOML(fn func(any) error) error {
+	var raw any
+	if err := fn(&raw); err != nil {
+		return err
+	}
+	switch val := raw.(type) {
+	case string:
+		*c = NewCompactStrategy(val)
+	default:
+		return fmt.Errorf("compact_strategy: unsupported type %T", val)
+	}
+	return nil
+}
+
 // SystemPromptValue supports both a plain string and a list of file paths.
 type SystemPromptValue struct {
 	Raw   string   // direct string value
@@ -269,7 +346,7 @@ func (m *ModelConfig) ResolveHandoffThreshold(agentCfg AgentConfig) float64 {
 	if agentCfg.HandoffThreshold > 0 {
 		return agentCfg.HandoffThreshold
 	}
-	return 0.8
+	return 0.75
 }
 
 // SupportsVision returns true if this model supports multi-modal image input.
@@ -287,7 +364,9 @@ type ToolResultMicrocompactConfig struct {
 	Enabled          *bool    `toml:"enabled"`      // nil = not configured (use defaults); true/false = explicit
 	KeepRecent       int      `toml:"keep_recent"`
 	CompactableTools []string `toml:"compactable_tools"`
-	GapMinutes       float64  `toml:"gap_minutes"` // wall-clock gap since last assistant reply; 0 disables time trigger
+	GapMinutes       float64  `toml:"gap_minutes"`     // wall-clock gap since last assistant reply; 0 disables time trigger
+	MaxAgeTurns      int      `toml:"max_age_turns"`   // clear tool results older than N assistant turns; 0 disables
+	SizeThreshold    int      `toml:"size_threshold"`  // immediate externalize single results larger than this many chars; 0 disables
 }
 
 // ToolResultPolicyConfig configures externalized tool payloads and aggregate budgets.
@@ -300,6 +379,42 @@ type ToolResultPolicyConfig struct {
 	Microcompact     ToolResultMicrocompactConfig `toml:"microcompact"`
 }
 
+// ToolPersistenceConfig controls which discovered tools survive a compact/handoff.
+// When nil or unset, behavior falls back to scaffolding profile (legacy/minimal keep,
+// standard clears). Explicit fields override the profile.
+type ToolPersistenceConfig struct {
+	// ClearOnCompact disables preserving discovered tools across compacts.
+	// nil = follow scaffolding profile; true = always clear; false = preserve.
+	ClearOnCompact *bool `toml:"clear_on_compact,omitempty" json:"clear_on_compact,omitempty"`
+	// KeepExtended preserves discovered extended tools unless marked Ephemeral.
+	KeepExtended *bool `toml:"keep_extended,omitempty" json:"keep_extended,omitempty"`
+	// KeepMCP preserves discovered MCP tools unless marked Ephemeral.
+	KeepMCP *bool `toml:"keep_mcp,omitempty" json:"keep_mcp,omitempty"`
+	// MaxDiscoveredTools caps the number of persisted discovered tools; 0 = unlimited.
+	MaxDiscoveredTools int `toml:"max_discovered_tools,omitempty" json:"max_discovered_tools,omitempty"`
+}
+
+// ContextConfig controls how the context window is built after compacts.
+type ContextConfig struct {
+	// PersistSystemPrompt writes the composed system prompt as a regular "system"
+	// entry (legacy). When false (default), it is written as an audit-only
+	// "system_prompt" entry and supplied directly via ChatOpts.SystemPrompt.
+	PersistSystemPrompt bool `toml:"persist_system_prompt,omitempty" json:"persist_system_prompt,omitempty"`
+	// SoftBoundary keeps N raw messages before the last anchor as a safety net.
+	SoftBoundary bool `toml:"soft_boundary,omitempty" json:"soft_boundary,omitempty"`
+	// KeepBeforeAnchor is how many raw messages to retain before the last anchor.
+	KeepBeforeAnchor int `toml:"keep_before_anchor,omitempty" json:"keep_before_anchor,omitempty"`
+	// RollingSummary enables incremental summary updates instead of re-summarizing everything.
+	RollingSummary bool `toml:"rolling_summary,omitempty" json:"rolling_summary,omitempty"`
+	// QualityFallback falls back to raw-message retention when compact summary quality is poor.
+	QualityFallback bool `toml:"quality_fallback,omitempty" json:"quality_fallback,omitempty"`
+	// SnipCompact enables lightweight snip/collapse cleanup before LLM summarization.
+	SnipCompact bool `toml:"snip_compact,omitempty" json:"snip_compact,omitempty"`
+	// Strategy selects how tape entries are transformed into LLM messages.
+	// Valid values: summary, snip, collapse, hybrid. Empty defaults to summary.
+	Strategy CompactStrategy `toml:"compact_strategy" json:"compact_strategy,omitempty"`
+}
+
 // AgentConfig configures the agent loop.
 type AgentConfig struct {
 	MaxSteps            int     `toml:"max_steps"`
@@ -309,6 +424,8 @@ type AgentConfig struct {
 	ToolResultMaxChars  int     `toml:"tool_result_max_chars,omitempty"`
 	// ToolResultPolicy configures persisting large tool outputs and microcompaction.
 	ToolResultPolicy ToolResultPolicyConfig `toml:"tool_result_policy,omitempty"`
+	// ToolPersistence controls which discovered tools survive compact/handoff.
+	ToolPersistence *ToolPersistenceConfig `toml:"tool_persistence,omitempty" json:"tool_persistence,omitempty"`
 	// SystemPrompt can be either a string or array of strings (file paths)
 	SystemPrompt SystemPromptValue `toml:"system_prompt,omitempty"`
 	// SystemPrompts is a list of per-tape system prompt entries.
@@ -326,6 +443,8 @@ type AgentConfig struct {
 	Review ReviewConfig `toml:"review,omitempty"`
 	// Scaffolding selects harness profile (legacy|standard|minimal).
 	Scaffolding ScaffoldingConfig `toml:"scaffolding,omitempty"`
+	// Context controls context-window construction after compacts.
+	Context ContextConfig `toml:"context" json:"context,omitempty"`
 }
 
 // HandoffConfig controls TaskState snapshots and compact ordering.

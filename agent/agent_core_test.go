@@ -6,6 +6,7 @@ import (
 
 	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/tape"
+	"github.com/seanly/dmr-devkit/tool"
 )
 
 func TestNew_DefaultMaxSteps(t *testing.T) {
@@ -238,6 +239,88 @@ func TestToolDiscovery(t *testing.T) {
 	a.ClearDiscoveredTools("tape1")
 	if a.IsToolDiscovered("tape1", "web") {
 		t.Error("should be cleared after ClearDiscoveredTools")
+	}
+}
+
+func TestToolPersistence_PreservesNonEphemeral(t *testing.T) {
+	// Register extended and MCP tools directly in the agent cache.
+	a := New(nil, nil, nil, Config{})
+	a.extendedTools = []*tool.Tool{
+		{Spec: tool.ToolSpec{Name: "ext1", Group: tool.ToolGroupExtended}},
+		{Spec: tool.ToolSpec{Name: "mcp1", Group: tool.ToolGroupMCP}},
+	}
+	a.extLoaded = true
+
+	a.DiscoverTool("tape1", "ext1")
+	a.DiscoverTool("tape1", "mcp1")
+
+	// Default policy preserves extended/MCP tools.
+	a.clearDiscoveredToolsWithReason("tape1", "compact")
+	if !a.IsToolDiscovered("tape1", "ext1") {
+		t.Error("ext1 should be preserved by default")
+	}
+	if !a.IsToolDiscovered("tape1", "mcp1") {
+		t.Error("mcp1 should be preserved by default")
+	}
+}
+
+func TestToolPersistence_ClearsEphemeral(t *testing.T) {
+	a := New(nil, nil, nil, Config{})
+	a.extendedTools = []*tool.Tool{
+		{Spec: tool.ToolSpec{Name: "ext1", Group: tool.ToolGroupExtended}},
+		{Spec: tool.ToolSpec{Name: "extTmp", Group: tool.ToolGroupExtended, Ephemeral: true}},
+	}
+	a.extLoaded = true
+
+	a.DiscoverTool("tape1", "ext1")
+	a.DiscoverTool("tape1", "extTmp")
+
+	a.clearDiscoveredToolsWithReason("tape1", "compact")
+	if !a.IsToolDiscovered("tape1", "ext1") {
+		t.Error("non-ephemeral ext1 should be preserved")
+	}
+	if a.IsToolDiscovered("tape1", "extTmp") {
+		t.Error("ephemeral extTmp should be cleared")
+	}
+}
+
+func TestToolPersistence_ExplicitClearOnCompact(t *testing.T) {
+	clear := true
+	a := New(nil, nil, nil, Config{AgentPolicy: config.AgentConfig{
+		ToolPersistence: &config.ToolPersistenceConfig{ClearOnCompact: &clear},
+	}})
+	a.extendedTools = []*tool.Tool{
+		{Spec: tool.ToolSpec{Name: "ext1", Group: tool.ToolGroupExtended}},
+	}
+	a.extLoaded = true
+
+	a.DiscoverTool("tape1", "ext1")
+	a.clearDiscoveredToolsWithReason("tape1", "compact")
+	if a.IsToolDiscovered("tape1", "ext1") {
+		t.Error("ext1 should be cleared when clear_on_compact=true")
+	}
+}
+
+func TestToolPersistence_KeepExtendedFalse(t *testing.T) {
+	keep := false
+	keepMCP := true
+	a := New(nil, nil, nil, Config{AgentPolicy: config.AgentConfig{
+		ToolPersistence: &config.ToolPersistenceConfig{KeepExtended: &keep, KeepMCP: &keepMCP},
+	}})
+	a.extendedTools = []*tool.Tool{
+		{Spec: tool.ToolSpec{Name: "ext1", Group: tool.ToolGroupExtended}},
+		{Spec: tool.ToolSpec{Name: "mcp1", Group: tool.ToolGroupMCP}},
+	}
+	a.extLoaded = true
+
+	a.DiscoverTool("tape1", "ext1")
+	a.DiscoverTool("tape1", "mcp1")
+	a.clearDiscoveredToolsWithReason("tape1", "compact")
+	if a.IsToolDiscovered("tape1", "ext1") {
+		t.Error("ext1 should be cleared when keep_extended=false")
+	}
+	if !a.IsToolDiscovered("tape1", "mcp1") {
+		t.Error("mcp1 should be preserved when keep_mcp=true")
 	}
 }
 

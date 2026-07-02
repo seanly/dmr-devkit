@@ -486,7 +486,11 @@ func (c *ChatClient) prepare(opts ChatOpts) (*preparedChat, error) {
 				if err != nil {
 					return nil, core.NewError(core.ErrUnknown, "failed to read tape entries", err)
 				}
-				tapeMsgs = tape.NewNoAnchorContext().BuildMessages(entries)
+				ctx := opts.Context
+				if ctx == nil {
+					ctx = tape.NewNoAnchorContext()
+				}
+				tapeMsgs = ctx.BuildMessages(entries)
 			} else {
 				ctx := opts.Context
 				if ctx == nil {

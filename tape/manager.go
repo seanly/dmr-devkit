@@ -12,35 +12,21 @@ import (
 
 // TapeManager provides high-level tape operations.
 type TapeManager struct {
-	Store TapeStore
+	Store   TapeStore
+	Builder *ContextBuilder
 }
 
 func NewTapeManager(store TapeStore) *TapeManager {
-	return &TapeManager{Store: store}
+	return &TapeManager{Store: store, Builder: NewContextBuilder(store)}
 }
 
 // ReadMessages reads tape entries and converts them to messages using the context.
 func (m *TapeManager) ReadMessages(tape string, ctx *TapeContext) ([]map[string]any, error) {
-	if ctx == nil {
-		ctx = NewLastAnchorContext()
+	if m.Builder == nil {
+		m.Builder = NewContextBuilder(m.Store)
 	}
-
-	opts := &FetchOpts{}
-	switch ctx.AnchorMode {
-	case LastAnchorS:
-		opts.LastAnchor = true
-	case NamedAnchor:
-		opts.AfterAnchor = ctx.AnchorName
-	case NoAnchor:
-		// no anchor filtering
-	}
-
-	entries, err := m.Store.FetchAll(tape, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	return ctx.BuildMessages(entries), nil
+	ctx.SetBuilder(m.Builder)
+	return m.Builder.ReadMessages(tape, ctx)
 }
 
 // AppendEntry appends a single entry to a tape.
@@ -143,6 +129,8 @@ type CompactOpts struct {
 	EventName      string // optional, defaults to "compact"
 	SummaryVersion int    // 0 means use default CompactSummarySchemaVersion
 	Summarizer     func(ctx context.Context, messages []map[string]any) (string, error)
+	Summary        string // optional pre-generated summary; when set, Summarizer is not called
+	Quality        string // optional quality label: good/fair/poor
 }
 
 // Compact generates a summary of the current tape context and creates a compact anchor.
@@ -162,17 +150,28 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 		return nil, fmt.Errorf("tape is empty, nothing to compact")
 	}
 
-	// 2. Convert to messages
+	// 2. Convert to messages using the builder so the transcript/API context split
+	// is exercised even by the compact path.
+	if m.Builder == nil {
+		m.Builder = NewContextBuilder(m.Store)
+	}
 	tapeCtx := NewLastAnchorContext()
-	messages := tapeCtx.BuildMessages(entries)
+	messages := m.Builder.BuildMessages(entries, tapeCtx)
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages to compact")
 	}
 
-	// 3. Call LLM to generate summary
-	summary, err := opts.Summarizer(ctx, messages)
-	if err != nil {
-		return nil, fmt.Errorf("summarize: %w", err)
+	// 3. Generate summary (or use pre-generated summary)
+	summary := opts.Summary
+	if summary == "" && opts.Summarizer != nil {
+		generated, err := opts.Summarizer(ctx, messages)
+		if err != nil {
+			return nil, fmt.Errorf("summarize: %w", err)
+		}
+		summary = generated
+	}
+	if strings.TrimSpace(summary) == "" {
+		return nil, fmt.Errorf("compact summary is empty")
 	}
 
 	// 4. Create anchor (pure marker)
@@ -193,7 +192,7 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	if summaryVersion <= 0 {
 		summaryVersion = CompactSummarySchemaVersion
 	}
-	summaryEntry := NewCompactSummaryEntryWithVersion(summary, summaryVersion)
+	summaryEntry := NewCompactSummaryEntryWithSourceAndQuality(summary, summaryVersion, name, opts.Quality)
 	if err := m.Store.Append(opts.Tape, summaryEntry); err != nil {
 		return nil, fmt.Errorf("append compact summary: %w", err)
 	}
@@ -206,6 +205,7 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	event := NewEventEntry(eventName, map[string]any{
 		"anchor":         name,
 		"summary_length": len(summary),
+		"quality":        opts.Quality,
 	})
 	if err := m.Store.Append(opts.Tape, event); err != nil {
 		return nil, fmt.Errorf("append compact event: %w", err)

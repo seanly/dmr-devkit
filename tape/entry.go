@@ -102,6 +102,14 @@ func NewSystemEntry(content string) TapeEntry {
 	return newEntry("system", map[string]any{"content": content})
 }
 
+// NewRuntimeSystemEntry records the composed system prompt as an audit-only entry.
+// Unlike NewSystemEntry, this kind is NOT injected back into the LLM context by
+// defaultBuildMessages, because the agent loop supplies the current system prompt
+// directly via ChatOpts.SystemPrompt on every request.
+func NewRuntimeSystemEntry(content string) TapeEntry {
+	return newEntry("system_prompt", map[string]any{"content": content})
+}
+
 func NewAnchorEntry(name string, state map[string]any) TapeEntry {
 	payload := map[string]any{"name": name}
 	if state != nil {
@@ -145,12 +153,35 @@ func NewCompactSummaryEntry(summary string) TapeEntry {
 
 // NewCompactSummaryEntryWithVersion creates a compact_summary entry with an explicit schema version.
 func NewCompactSummaryEntryWithVersion(summary string, version int) TapeEntry {
+	return NewCompactSummaryEntryWithSource(summary, version, "")
+}
+
+// NewCompactSummaryEntryWithSource creates a compact_summary entry with an explicit
+// schema version and the anchor it was generated from. The source anchor supports
+// rolling/auditable summaries.
+func NewCompactSummaryEntryWithSource(summary string, version int, sourceAnchor string) TapeEntry {
+	return NewCompactSummaryEntryWithSourceAndQuality(summary, version, sourceAnchor, "")
+}
+
+// NewCompactSummaryEntryWithSourceAndQuality creates a compact_summary entry with
+// source anchor and an optional quality label (good/fair/poor). The quality label
+// lets the context builder skip poor summaries when quality fallback is enabled.
+func NewCompactSummaryEntryWithSourceAndQuality(summary string, version int, sourceAnchor, quality string) TapeEntry {
 	payload := map[string]any{
 		"content":        summary,
 		"schema_version": version,
 	}
-	return newEntry("compact_summary", payload,
-		WithMeta(map[string]any{"schema_version": version}))
+	if sourceAnchor != "" {
+		payload["source_anchor"] = sourceAnchor
+	}
+	if quality != "" {
+		payload["quality"] = quality
+	}
+	meta := map[string]any{"schema_version": version}
+	if quality != "" {
+		meta["quality"] = quality
+	}
+	return newEntry("compact_summary", payload, WithMeta(meta))
 }
 
 // NewTaskStateEntry stores structured task state (HandoffState v1).

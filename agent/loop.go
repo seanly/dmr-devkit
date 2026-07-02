@@ -236,7 +236,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		}
 	}
 	systemPrompt := mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
-	if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
+	if err := a.appendSystemPromptEntry(tapeName, systemPrompt); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
 	// Include multi-modal parts in the user message entry when provided
@@ -276,7 +276,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if mode != nil && mode.tapeContextOverride != nil {
 				tapeCtx = mode.tapeContextOverride
 			} else {
-				tapeCtx = tape.NewLastAnchorContext()
+				tapeCtx = a.tapeContextForTape(tapeName)
 			}
 		}
 		tokensEst := 0
@@ -327,7 +327,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 
 						// Rebuild system prompt and continue with structured prompt
 						systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
-						if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
+						if err := a.appendSystemPromptEntry(tapeName, systemPrompt); err != nil {
 							slog.Warn("tape append failed", "tape", tapeName, "error", err)
 						}
 						if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{
@@ -673,7 +673,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					currentPrompt = continueAfterCompactPrompt
 
 					systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
-					if err := a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt)); err != nil {
+					if err := a.appendSystemPromptEntry(tapeName, systemPrompt); err != nil {
 						slog.Warn("tape append failed", "tape", tapeName, "error", err)
 					}
 					if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{

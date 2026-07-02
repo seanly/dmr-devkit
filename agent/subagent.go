@@ -60,6 +60,7 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 	default:
 		tc = tape.NewNamedAnchorContext(jobID)
 	}
+	tc.Strategy = a.resolveContextStrategy()
 
 	// Inject optional contextJSON as a system message.
 	if strings.TrimSpace(contextJSON) != "" {

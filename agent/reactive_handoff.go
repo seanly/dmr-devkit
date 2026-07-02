@@ -152,7 +152,7 @@ func (a *Agent) buildContinuationPrompt(info *contextOverflowInfo) string {
 // restartContextWithPrompt restarts the context with a new prompt after overflow.
 func (a *Agent) restartContextWithPrompt(ctx context.Context, tapeName, prompt string) {
 	systemPrompt := a.resolveSystemPrompt(ctx, tapeName)
-	_ = a.tape.AppendEntry(tapeName, tape.NewSystemEntry(systemPrompt))
+	_ = a.appendSystemPromptEntry(tapeName, systemPrompt)
 	_ = a.tape.AppendEntry(tapeName, tape.NewMessageEntry(map[string]any{
 		"role":    "user",
 		"content": prompt,

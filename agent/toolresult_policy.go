@@ -27,7 +27,7 @@ func buildToolResultPolicy(cfg Config) toolresult.Policy {
 	if toolResultPolicyUnset(c) {
 		// Sensible CLI defaults when [agent.tool_result_policy] is omitted.
 		mcEnabled = true
-		keepRecent = 3
+		keepRecent = 5
 		mcTools = toolresult.DefaultMicrocompactTools()
 	} else {
 		// User explicitly configured the section; respect the settings.
@@ -38,7 +38,7 @@ func buildToolResultPolicy(cfg Config) toolresult.Policy {
 	}
 
 	if keepRecent == 0 && mcEnabled {
-		keepRecent = 3
+		keepRecent = 5
 	}
 	if mcEnabled && len(mcTools) == 0 {
 		mcTools = toolresult.DefaultMicrocompactTools()
@@ -55,6 +55,8 @@ func buildToolResultPolicy(cfg Config) toolresult.Policy {
 			KeepRecent:       keepRecent,
 			CompactableTools: mcTools,
 			GapMinutes:       c.Microcompact.GapMinutes,
+			MaxAgeTurns:      c.Microcompact.MaxAgeTurns,
+			SizeThreshold:    c.Microcompact.SizeThreshold,
 		},
 	}
 }
@@ -63,5 +65,6 @@ func toolResultPolicyUnset(c config.ToolResultPolicyConfig) bool {
 	return c.DefaultMaxChars == 0 && c.PerMessageBudget == 0 && c.PreviewChars == 0 &&
 		c.PersistSubdir == "" && len(c.SkipTools) == 0 &&
 		c.Microcompact.Enabled == nil && c.Microcompact.KeepRecent == 0 &&
-		len(c.Microcompact.CompactableTools) == 0 && c.Microcompact.GapMinutes == 0
+		len(c.Microcompact.CompactableTools) == 0 && c.Microcompact.GapMinutes == 0 &&
+		c.Microcompact.MaxAgeTurns == 0 && c.Microcompact.SizeThreshold == 0
 }

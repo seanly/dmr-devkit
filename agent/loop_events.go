@@ -33,12 +33,28 @@ func (a *Agent) recordHandoffEvent(tapeName, reason, anchor string, stateEntryID
 	})
 }
 
-func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool) {
+func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, quality CompactQuality) {
 	data := map[string]any{"success": success, "summary_chars": summaryChars}
 	if judgePass != nil {
 		data["judge_pass"] = *judgePass
 	}
+	data["quality"] = quality.String()
 	a.recordLoopEvent(tapeName, "loop:compact", data)
+}
+
+func (q CompactQuality) String() string {
+	switch q {
+	case CompactQualityGood:
+		return "good"
+	case CompactQualityFair:
+		return "fair"
+	case CompactQualityPoor:
+		return "poor"
+	case CompactQualityUnknown:
+		return "unknown"
+	default:
+		return "unknown"
+	}
 }
 
 func (a *Agent) recordRunEnd(tapeName string, step, toolIterations, promptTokens int) {
@@ -59,7 +75,7 @@ func (a *Agent) performContextHandoff(ctx context.Context, tapeName, handoffName
 	if !a.llmCompactEnabled() {
 		a.Handoff(tapeName, handoffName, map[string]any{"reason": reason, "state_only": true, "profile": "minimal"})
 		a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, false)
-		a.recordCompactEvent(tapeName, false, 0, nil)
+		a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown)
 		return false, stateEntryID
 	}
 	err := a.CompactTapeWithName(ctx, tapeName, handoffName)
@@ -67,17 +83,17 @@ func (a *Agent) performContextHandoff(ctx context.Context, tapeName, handoffName
 		slog.Error("compact: handoff compact failed", "reason", reason, "error", err)
 		if h.CompactRequired {
 			a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, true)
-			a.recordCompactEvent(tapeName, false, 0, nil)
+			a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown)
 			return false, stateEntryID
 		}
 		a.Handoff(tapeName, handoffName, map[string]any{
 			"reason": reason, "compact_error": err.Error(), "state_only": true,
 		})
 		a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, true)
-		a.recordCompactEvent(tapeName, false, 0, nil)
+		a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown)
 		return false, stateEntryID
 	}
 	a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, true)
-	a.recordCompactEvent(tapeName, true, 0, nil)
+	a.recordCompactEvent(tapeName, true, 0, nil, CompactQualityUnknown)
 	return true, stateEntryID
 }

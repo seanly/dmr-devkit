@@ -47,6 +47,30 @@ func TestReadMessagesReportsMissingAnchor(t *testing.T) {
 	}
 }
 
+func TestReadMessagesSoftBoundaryKeepsBeforeAnchor(t *testing.T) {
+	store := NewInMemoryTapeStore()
+	seedEntries(store)
+	mgr := NewTapeManager(store)
+
+	ctx := NewSoftBoundaryContext(2)
+	msgs, err := mgr.ReadMessages("test_tape", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages (after anchor 1 + before 2), got %d", len(msgs))
+	}
+	if msgs[0]["content"] != "task 2" {
+		t.Errorf("first after-anchor content = %v, want task 2", msgs[0]["content"])
+	}
+	// The two before-anchor messages are appended after the main window in tape order.
+	if msgs[1]["content"] != "task 1" {
+		t.Errorf("second content = %v, want task 1", msgs[1]["content"])
+	}
+	if msgs[2]["content"] != "answer 1" {
+		t.Errorf("third content = %v, want answer 1", msgs[2]["content"])
+	}
+}
 func TestAppendEntry(t *testing.T) {
 	store := NewInMemoryTapeStore()
 	mgr := NewTapeManager(store)
@@ -208,5 +232,41 @@ func TestCompact_WritesConfiguredSummaryVersion(t *testing.T) {
 	}
 	if got := created2[1].Payload["schema_version"]; got != CompactSummarySchemaVersion {
 		t.Errorf("default schema_version = %v, want %d", got, CompactSummarySchemaVersion)
+	}
+}
+
+func TestCompact_PreGeneratedSummaryAndQuality(t *testing.T) {
+	store := NewInMemoryTapeStore()
+	mgr := NewTapeManager(store)
+
+	_ = store.Append("test_tape", NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+
+	created, err := mgr.Compact(context.Background(), CompactOpts{
+		Tape:       "test_tape",
+		AnchorName: "test:compact",
+		Summary:    "pre-generated summary",
+		Quality:    "poor",
+	})
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(created) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(created))
+	}
+	if created[1].Kind != "compact_summary" {
+		t.Fatalf("expected compact_summary entry, got %q", created[1].Kind)
+	}
+	if got := created[1].Payload["content"]; got != "pre-generated summary" {
+		t.Errorf("summary content = %v, want pre-generated summary", got)
+	}
+	if got := created[1].Payload["quality"]; got != "poor" {
+		t.Errorf("summary quality = %v, want poor", got)
+	}
+	if got := created[1].Meta["quality"]; got != "poor" {
+		t.Errorf("meta quality = %v, want poor", got)
+	}
+	data, _ := created[2].Payload["data"].(map[string]any)
+	if got := data["quality"]; got != "poor" {
+		t.Errorf("event quality = %v, want poor", got)
 	}
 }

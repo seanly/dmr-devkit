@@ -5,6 +5,7 @@ package tape
 type CompactSummaryData struct {
 	SchemaVersion int
 	Content       string
+	SourceAnchor  string // anchor this summary was generated from
 }
 
 // ExtractCompactSummary parses a compact_summary payload. If schema_version is
@@ -25,5 +26,6 @@ func ExtractCompactSummary(payload map[string]any) (CompactSummaryData, bool) {
 		version = int(v)
 	}
 
-	return CompactSummaryData{SchemaVersion: version, Content: content}, true
+	sourceAnchor, _ := payload["source_anchor"].(string)
+	return CompactSummaryData{SchemaVersion: version, Content: content, SourceAnchor: sourceAnchor}, true
 }

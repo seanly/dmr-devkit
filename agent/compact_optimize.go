@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 
+	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/tape"
 )
 
@@ -282,7 +283,7 @@ func extractLatestCompactSummaryFromEntries(entries []tape.TapeEntry) (summary s
 // It extracts the latest compact_summary, builds messages from the remaining
 // entries, applies the standard message-level optimizations, and then re-injects
 // the previous summary as the first user message.
-func optimizeEntriesForSummary(entries []tape.TapeEntry) []map[string]any {
+func optimizeEntriesForSummary(entries []tape.TapeEntry, ctx *tape.TapeContext) []map[string]any {
 	previousSummary := extractLatestCompactSummaryFromEntries(entries)
 
 	// Drop all compact_summary entries so they are not summarized twice.
@@ -294,7 +295,11 @@ func optimizeEntriesForSummary(entries []tape.TapeEntry) []map[string]any {
 		filtered = append(filtered, e)
 	}
 
-	messages := tape.NewLastAnchorContext().BuildMessages(filtered)
+	if ctx == nil {
+		ctx = tape.NewLastAnchorContext()
+	}
+	ctx.Strategy = config.CompactStrategySummary
+	messages := ctx.BuildMessages(filtered)
 	optimized := optimizeMessagesForSummary(messages)
 
 	// Re-inject the previous context summary as the first message.

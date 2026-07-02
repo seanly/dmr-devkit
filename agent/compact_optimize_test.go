@@ -283,7 +283,7 @@ func TestOptimizeEntriesForSummary(t *testing.T) {
 		tape.NewMessageEntry(map[string]any{"role": "user", "content": "msg3"}),
 	}
 
-	optimized := optimizeEntriesForSummary(entries)
+	optimized := optimizeEntriesForSummary(entries, tape.NewLastAnchorContext())
 
 	// First message should be the re-injected previous context summary.
 	if len(optimized) == 0 {

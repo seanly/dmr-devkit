@@ -134,10 +134,25 @@ func (m *Manager) ProcessNew(threshold int, tapeName, toolCallID, toolName strin
 	if m.policy.skips(toolName) {
 		th = -1
 	}
+
+	runeCount := utf8.RuneCountInString(text)
+
+	// Hard size threshold: a single result larger than SizeThreshold is immediately
+	// externalized regardless of SkipTools, because sending it inline risks blowing
+	// the context window on the next turn.
+	if sizeTh := m.policy.Microcompact.SizeThreshold; sizeTh > 0 && runeCount > sizeTh {
+		msg, _, err := m.policy.persistAndBuildMessage(m.policy.Workspace, tapeName, toolCallID, text)
+		if err != nil {
+			slog.Warn("toolresult: size-threshold persist failed, truncating", "tape", tapeName, "tool", toolName, "error", err)
+			return TruncateWithHint(text, sizeTh)
+		}
+		return msg
+	}
+
 	if th < 0 {
 		return text
 	}
-	if utf8.RuneCountInString(text) <= th {
+	if runeCount <= th {
 		return text
 	}
 	msg, _, err := m.policy.persistAndBuildMessage(m.policy.Workspace, tapeName, toolCallID, text)
@@ -312,6 +327,16 @@ func (m *Manager) applyMicrocompact(tape string, msgs []map[string]any, now time
 		clearAllButLastN(idxs, keep, msgs)
 		return
 	}
+
+	// Age-based clearing: remove tool results older than MaxAgeTurns assistant turns.
+	if mc.MaxAgeTurns > 0 {
+		clearToolMessagesOlderThanTurns(idxs, msgs, mc.MaxAgeTurns)
+		idxs = compactableToolIndexes(msgs, toolsMap)
+		if len(idxs) == 0 {
+			return
+		}
+	}
+
 	if len(idxs) <= keep {
 		return
 	}
@@ -369,6 +394,45 @@ func clearAllButLastN(idxs []int, keep int, msgs []map[string]any) {
 		clear[idxs[i]] = struct{}{}
 	}
 	clearToolMessagesAt(msgs, clear)
+}
+
+// clearToolMessagesOlderThanTurns clears compactable tool results that are older
+// than maxAge assistant turns. An assistant turn is counted each time we cross an
+// assistant message while scanning from the end toward the start.
+func clearToolMessagesOlderThanTurns(idxs []int, msgs []map[string]any, maxAge int) {
+	if maxAge <= 0 || len(idxs) == 0 || len(msgs) == 0 {
+		return
+	}
+	toClear := map[int]struct{}{}
+	turnsSeen := 0
+	// Scan backwards; track how many assistant turns each tool message is behind.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		role, _ := msgs[i]["role"].(string)
+		if role == "assistant" {
+			turnsSeen++
+			continue
+		}
+		if role != "tool" {
+			continue
+		}
+		// Binary search is overkill for small slices; idxs is already sorted.
+		if !intSliceContains(idxs, i) {
+			continue
+		}
+		if turnsSeen >= maxAge {
+			toClear[i] = struct{}{}
+		}
+	}
+	clearToolMessagesAt(msgs, toClear)
+}
+
+func intSliceContains(haystack []int, needle int) bool {
+	for _, v := range haystack {
+		if v == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func clearToolMessagesAt(msgs []map[string]any, idx map[int]struct{}) {

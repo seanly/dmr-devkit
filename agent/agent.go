@@ -48,6 +48,13 @@ type Config struct {
 	TapeControl any                       // plugin.TapeControl — injected by host
 	DefaultTape string                    // canonical session tape for stable override keys
 
+	// PersistSystemPrompt controls whether the composed system prompt is written
+	// to tape as a regular "system" entry (legacy) or as an audit-only
+	// "system_prompt" entry (default). When false, the current system prompt is
+	// supplied directly via ChatOpts.SystemPrompt on every LLM request, making it
+	// independent of compact/history.
+	PersistSystemPrompt bool
+
 	// Tracer enables OpenTelemetry-aligned spans for agent, llm_call and tool_call
 	// lifecycle events. When nil, no spans are recorded.
 	Tracer *observe.Tracer
@@ -103,6 +110,50 @@ func (a *Agent) SetDefaultTape(tape string) {
 	a.cfgMu.Lock()
 	a.config.DefaultTape = tape
 	a.cfgMu.Unlock()
+}
+
+// appendSystemPromptEntry records the composed system prompt to tape.
+// When PersistSystemPrompt is true it writes a regular "system" entry (legacy);
+// otherwise it writes an audit-only "system_prompt" entry so the agent loop can
+// supply the current prompt directly via ChatOpts.SystemPrompt on every turn.
+func (a *Agent) appendSystemPromptEntry(tapeName, content string) error {
+	if a.config.PersistSystemPrompt {
+		return a.tape.AppendEntry(tapeName, tape.NewSystemEntry(content))
+	}
+	return a.tape.AppendEntry(tapeName, tape.NewRuntimeSystemEntry(content))
+}
+
+// tapeContextForTape returns the appropriate TapeContext for a tape based on
+// agent policy. When soft_boundary is enabled, it keeps KeepBeforeAnchor raw
+// messages before the last anchor as a safety net. When quality_fallback is
+// enabled, poor compact summaries are suppressed so the model falls back to
+// task_state + recent raw messages. The configured compact strategy is copied
+// onto the context.
+func (a *Agent) tapeContextForTape(tapeName string) *tape.TapeContext {
+	ctxCfg := a.config.AgentPolicy.Context
+	strategy := ctxCfg.Strategy
+	if strategy.IsSummary() && ctxCfg.SnipCompact {
+		strategy = config.CompactStrategySnip
+	}
+	var ctx *tape.TapeContext
+	if ctxCfg.SoftBoundary && ctxCfg.KeepBeforeAnchor > 0 {
+		ctx = tape.NewSoftBoundaryContext(ctxCfg.KeepBeforeAnchor)
+	} else {
+		ctx = tape.NewLastAnchorContext()
+	}
+	ctx.SkipPoorSummaries = ctxCfg.QualityFallback
+	ctx.Strategy = strategy
+	return ctx
+}
+
+// resolveContextStrategy returns the effective compact strategy for a tape based
+// on agent policy, honoring the legacy SnipCompact flag.
+func (a *Agent) resolveContextStrategy() config.CompactStrategy {
+	ctxCfg := a.config.AgentPolicy.Context
+	if ctxCfg.Strategy.IsSummary() && ctxCfg.SnipCompact {
+		return config.CompactStrategySnip
+	}
+	return ctxCfg.Strategy
 }
 
 // New creates a new Agent.
@@ -730,10 +781,97 @@ func (a *Agent) Handoff(tapeName, name string, state map[string]any) {
 	}
 }
 
-// ClearDiscoveredTools clears all discovered tool state for a tape.
-// This resets the tool discovery state, requiring tools to be re-discovered
-// via toolSearch before they can be used again.
+// ClearDiscoveredTools clears discovered tool state according to the configured
+// ToolPersistence policy. Core tools are never affected. Deferred tools are
+// preserved unless the policy says otherwise or the tool is marked Ephemeral.
 func (a *Agent) ClearDiscoveredTools(tapeName string) {
+	a.clearDiscoveredToolsWithReason(tapeName, "handoff")
+}
+
+// clearDiscoveredToolsWithReason performs the actual selective clearing and is
+// shared by Handoff and compact paths.
+func (a *Agent) clearDiscoveredToolsWithReason(tapeName, reason string) {
+	policy := a.toolPersistencePolicy()
+	if policy.ClearOnCompact != nil {
+		if *policy.ClearOnCompact {
+			// Explicit full reset.
+			a.clearAllDiscoveredTools(tapeName)
+		} else {
+			// Explicit preserve-all.
+			if a.config.Verbose >= 1 {
+				slog.Info("agent: preserving all discovered tools", "tape", tapeName, "reason", reason)
+			}
+		}
+		return
+	}
+
+	// Selective clearing (default): keep non-ephemeral tools according to group rules.
+	ts := a.tapeStates.getOrCreate(tapeName)
+
+	// Build a lookup of all deferred tools so we can decide per-tool.
+	deferred := make(map[string]*tool.Tool)
+	for _, t := range a.GetAllExtendedTools() {
+		if t != nil && t.IsDeferred() {
+			deferred[t.Spec.Name] = t
+		}
+	}
+
+	ts.mu.Lock()
+	before := len(ts.discoveredTools)
+	kept := 0
+	cleared := 0
+	for name := range ts.discoveredTools {
+		keep := false
+		if t, ok := deferred[name]; ok {
+			if t.Spec.Ephemeral {
+				keep = false
+			} else {
+				switch t.GetGroup() {
+				case tool.ToolGroupExtended:
+					if policy.KeepExtended != nil {
+						keep = *policy.KeepExtended
+					}
+				case tool.ToolGroupMCP:
+					if policy.KeepMCP != nil {
+						keep = *policy.KeepMCP
+					}
+				}
+			}
+		}
+		if keep {
+			kept++
+		} else {
+			delete(ts.discoveredTools, name)
+			cleared++
+		}
+	}
+	// Enforce cap if configured.
+	if policy.MaxDiscoveredTools > 0 && len(ts.discoveredTools) > policy.MaxDiscoveredTools {
+		toRemove := len(ts.discoveredTools) - policy.MaxDiscoveredTools
+		for name := range ts.discoveredTools {
+			if toRemove <= 0 {
+				break
+			}
+			delete(ts.discoveredTools, name)
+			cleared++
+			kept--
+			toRemove--
+		}
+	}
+	ts.toolsCache = nil
+	ts.mu.Unlock()
+
+	if a.config.Verbose >= 1 {
+		slog.Info("agent: cleared discovered tools",
+			"tape", tapeName, "before", before, "cleared", cleared, "kept", kept, "reason", reason)
+	}
+
+	_ = a.hooks.OnDiscoveredToolsCleared(context.Background(), tapeName)
+	a.persistTapeState(tapeName)
+}
+
+// clearAllDiscoveredTools clears every discovered tool for the tape.
+func (a *Agent) clearAllDiscoveredTools(tapeName string) {
 	ts := a.tapeStates.getOrCreate(tapeName)
 	ts.mu.Lock()
 	count := len(ts.discoveredTools)
@@ -742,12 +880,38 @@ func (a *Agent) ClearDiscoveredTools(tapeName string) {
 	ts.mu.Unlock()
 
 	if a.config.Verbose >= 1 {
-		slog.Info("agent: cleared discovered tools", "count", count, "tape", tapeName)
+		slog.Info("agent: cleared all discovered tools", "count", count, "tape", tapeName)
 	}
 
-	// Notify hooks so they can reset per-tape state (e.g. search counters)
 	_ = a.hooks.OnDiscoveredToolsCleared(context.Background(), tapeName)
 	a.persistTapeState(tapeName)
+}
+
+// toolPersistencePolicy returns the effective tool persistence policy.
+// The new default (no configuration) preserves discovered extended/MCP tools
+// across compacts so the model does not lose capabilities, while dropping
+// tools explicitly marked Ephemeral. Set [agent.tool_persistence] to override;
+// clear_on_compact=true restores the legacy full-clear.
+func (a *Agent) toolPersistencePolicy() config.ToolPersistenceConfig {
+	keep := true
+	policy := config.ToolPersistenceConfig{
+		ClearOnCompact: nil, // nil means "use selective keep rules"
+		KeepExtended:   &keep,
+		KeepMCP:        &keep,
+	}
+	cfg := a.config.AgentPolicy.ToolPersistence
+	if cfg == nil {
+		return policy
+	}
+	policy.ClearOnCompact = cfg.ClearOnCompact
+	if cfg.KeepExtended != nil {
+		policy.KeepExtended = cfg.KeepExtended
+	}
+	if cfg.KeepMCP != nil {
+		policy.KeepMCP = cfg.KeepMCP
+	}
+	policy.MaxDiscoveredTools = cfg.MaxDiscoveredTools
+	return policy
 }
 
 // isChildTape reports whether tapeName belongs to a transient subagent run.

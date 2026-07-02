@@ -5,7 +5,9 @@ type MicrocompactPolicy struct {
 	Enabled          bool
 	KeepRecent       int
 	CompactableTools map[string]struct{} // empty = no tool is compactable
-	GapMinutes       float64               // 0 = disable time-based trigger; >0 requires last message time
+	GapMinutes       float64             // 0 = disable time-based trigger; >0 requires last message time
+	MaxAgeTurns      int                 // 0 = disable age-based trigger; >0 clears tool results older than N assistant turns
+	SizeThreshold    int                 // 0 = disable size-based trigger; >0 immediately externalizes single results larger than threshold runes
 }
 
 // Policy configures tool result externalization and compaction.

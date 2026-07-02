@@ -48,6 +48,10 @@ type ToolSpec struct {
 	// MaxResultChars controls when this tool's output is externalized to disk:
 	// 0 = use model/agent default; >0 = cap in runes; -1 = never externalize (send full output).
 	MaxResultChars int
+
+	// Ephemeral marks a deferred (extended/mcp) tool whose discovered state should
+	// NOT survive a compact/handoff. Core tools are never ephemeral.
+	Ephemeral bool
 }
 
 // Tool defines a callable tool with its specification and runtime behavior.

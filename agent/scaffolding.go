@@ -21,7 +21,10 @@ func (a *Agent) scaffoldingLegacy() bool {
 }
 
 func (a *Agent) clearToolsOnCompact() bool {
-	return !a.scaffoldingMinimal()
+	// The default now preserves discovered tools; explicit clear_on_compact=true
+	// restores the legacy full-clear behavior.
+	policy := a.toolPersistencePolicy()
+	return policy.ClearOnCompact != nil && *policy.ClearOnCompact
 }
 
 func (a *Agent) preemptiveCompactEnabled() bool {

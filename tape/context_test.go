@@ -227,3 +227,72 @@ func TestBuildMessagesCompactSummaryLegacyBackwardCompatible(t *testing.T) {
 		t.Fatalf("expected context_kind=compact_summary, got %v", msgs[0]["context_kind"])
 	}
 }
+
+func TestBuildMessagesIgnoresRuntimeSystemPrompt(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	entries := []TapeEntry{
+		NewRuntimeSystemEntry("composed runtime system prompt"),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message (runtime system_prompt ignored), got %d", len(msgs))
+	}
+	if msgs[0]["content"] != "hello" {
+		t.Errorf("content = %q, want hello", msgs[0]["content"])
+	}
+}
+
+func TestBuildMessagesSkipPoorSummaries(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	ctx.SkipPoorSummaries = true
+	entries := []TapeEntry{
+		NewCompactSummaryEntryWithSourceAndQuality("good summary", CompactSummarySchemaVersion, "a1", "good"),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+		NewCompactSummaryEntryWithSourceAndQuality("poor summary", CompactSummarySchemaVersion, "a2", "poor"),
+		NewMessageEntry(map[string]any{"role": "assistant", "content": "ok"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 3 {
+		t.Fatalf("expected good summary + 2 messages, got %d", len(msgs))
+	}
+	if msgs[0]["content"] != "good summary" {
+		t.Errorf("good summary should be kept, got %q", msgs[0]["content"])
+	}
+	if msgs[1]["content"] != "hello" {
+		t.Errorf("user message should be kept, got %q", msgs[1]["content"])
+	}
+	if msgs[2]["content"] != "ok" {
+		t.Errorf("assistant message should be kept, got %q", msgs[2]["content"])
+	}
+}
+
+func TestBuildMessagesKeepsPoorSummariesWithoutFlag(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	entries := []TapeEntry{
+		NewCompactSummaryEntryWithSourceAndQuality("poor summary", CompactSummarySchemaVersion, "a1", "poor"),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 2 {
+		t.Fatalf("expected poor summary + message when SkipPoorSummaries=false, got %d", len(msgs))
+	}
+	if msgs[0]["content"] != "poor summary" {
+		t.Errorf("poor summary should be kept without flag, got %q", msgs[0]["content"])
+	}
+}
+
+func TestBuildMessagesKeepsExplicitSystemEntry(t *testing.T) {
+	ctx := NewNoAnchorContext()
+	entries := []TapeEntry{
+		NewSystemEntry("user system prompt"),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+	}
+	msgs := ctx.BuildMessages(entries)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0]["role"] != "system" || msgs[0]["content"] != "user system prompt" {
+		t.Errorf("first message = %v, want system/user system prompt", msgs[0])
+	}
+}

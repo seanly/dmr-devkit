@@ -279,6 +279,39 @@ func TestSystemPromptFromAny(t *testing.T) {
 	})
 }
 
+func TestCompactStrategyTOMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		toml     string
+		expected CompactStrategy
+	}{
+		{"empty defaults to summary", "[agent]\n", CompactStrategySummary},
+		{"summary explicit", "[agent.context]\ncompact_strategy = \"summary\"\n", CompactStrategySummary},
+		{"snip", "[agent.context]\ncompact_strategy = \"snip\"\n", CompactStrategySnip},
+		{"collapse", "[agent.context]\ncompact_strategy = \"collapse\"\n", CompactStrategyCollapse},
+		{"hybrid", "[agent.context]\ncompact_strategy = \"hybrid\"\n", CompactStrategyHybrid},
+		{"unknown defaults to summary", "[agent.context]\ncompact_strategy = \"magic\"\n", CompactStrategySummary},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg agentDoc
+			if err := toml.Unmarshal([]byte(tt.toml), &cfg); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			if cfg.Agent.Context.Strategy != tt.expected {
+				t.Fatalf("strategy = %v, want %v", cfg.Agent.Context.Strategy, tt.expected)
+			}
+			marshaled, err := toml.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if !strings.Contains(string(marshaled), tt.expected.String()) {
+				t.Fatalf("marshal should contain %q, got %q", tt.expected.String(), string(marshaled))
+			}
+		})
+	}
+}
+
 func TestExtractSystemPromptFields_errors(t *testing.T) {
 	doc := map[string]any{
 		"agent": map[string]any{

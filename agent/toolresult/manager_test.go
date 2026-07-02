@@ -142,6 +142,75 @@ func TestMicrocompact_GapTriggered(t *testing.T) {
 	}
 }
 
+func TestMicrocompact_MaxAgeTurns(t *testing.T) {
+	m := NewManager(Policy{
+		Microcompact: MicrocompactPolicy{
+			Enabled:          true,
+			KeepRecent:       10, // keep-recent is high so age is the only trigger
+			CompactableTools: map[string]struct{}{"shell": {}},
+			MaxAgeTurns:      2,
+		},
+	})
+
+	// Layout: A1 + 2 tools (older than 2 turns), A2 + 1 tool, A3 + 1 tool (within last 2 turns).
+	msgs := []map[string]any{
+		{"role": "assistant", "tool_calls": []any{
+			map[string]any{"id": "1", "function": map[string]any{"name": "shell"}},
+			map[string]any{"id": "2", "function": map[string]any{"name": "shell"}},
+		}},
+		{"role": "tool", "tool_call_id": "1", "content": "old-one"},
+		{"role": "tool", "tool_call_id": "2", "content": "old-two"},
+		{"role": "assistant", "tool_calls": []any{
+			map[string]any{"id": "3", "function": map[string]any{"name": "shell"}},
+		}},
+		{"role": "tool", "tool_call_id": "3", "content": "mid"},
+		{"role": "assistant", "tool_calls": []any{
+			map[string]any{"id": "4", "function": map[string]any{"name": "shell"}},
+		}},
+		{"role": "tool", "tool_call_id": "4", "content": "recent"},
+	}
+	m.PrepareWireMessages("main", msgs, time.Now())
+
+	if msgs[1]["content"] != ToolResultClearedMessage {
+		t.Fatalf("tool from oldest turn should be cleared, got %v", msgs[1]["content"])
+	}
+	if msgs[2]["content"] != ToolResultClearedMessage {
+		t.Fatalf("tool from oldest turn should be cleared, got %v", msgs[2]["content"])
+	}
+	if msgs[4]["content"] != "mid" {
+		t.Fatalf("tool within last 2 turns should remain, got %v", msgs[4]["content"])
+	}
+	if msgs[6]["content"] != "recent" {
+		t.Fatalf("tool within last 2 turns should remain, got %v", msgs[6]["content"])
+	}
+}
+
+func TestProcessNew_SizeThreshold(t *testing.T) {
+	workspace := t.TempDir()
+	m := NewManager(Policy{
+		Workspace:     workspace,
+		DefaultMaxChars: 100000, // normal threshold is huge
+		SkipTools:     map[string]struct{}{"shell": {}}, // normally skipped
+		Microcompact: MicrocompactPolicy{
+			Enabled:       true,
+			SizeThreshold: 50,
+		},
+	})
+
+	huge := strings.Repeat("x", 200)
+	out := m.ProcessNew(100000, workspace, "tc1", "shell", huge)
+	if !strings.HasPrefix(out, PersistedOutputTag) {
+		t.Fatalf("size threshold should force externalization despite SkipTools, got %q", out)
+	}
+
+	// Small results should still be preserved even for skipped tools.
+	small := "tiny"
+	out = m.ProcessNew(100000, workspace, "tc2", "shell", small)
+	if out != small {
+		t.Fatalf("small skipped-tool result should be preserved, got %q", out)
+	}
+}
+
 func TestCloneState(t *testing.T) {
 	m := NewManager(Policy{})
 	m.NoteAssistantTurn("t1", time.Now())
