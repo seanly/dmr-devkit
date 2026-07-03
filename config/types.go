@@ -110,6 +110,10 @@ var (
 	CompactStrategyCollapse = CompactStrategy{value: "collapse"}
 	// CompactStrategyHybrid applies snip then collapse.
 	CompactStrategyHybrid = CompactStrategy{value: "hybrid"}
+	// CompactStrategySemanticCollapse collapses assistant tool_calls + matching
+	// tool results into a single summarizer message. For live context it behaves
+	// like summary because OpenAI-compatible APIs require separate roles.
+	CompactStrategySemanticCollapse = CompactStrategy{value: "semantic_collapse"}
 )
 
 // NewCompactStrategy creates a CompactStrategy from a string. Unrecognized values default to Summary.
@@ -121,6 +125,8 @@ func NewCompactStrategy(s string) CompactStrategy {
 		return CompactStrategyCollapse
 	case "hybrid":
 		return CompactStrategyHybrid
+	case "semantic_collapse":
+		return CompactStrategySemanticCollapse
 	default:
 		return CompactStrategySummary
 	}
@@ -145,6 +151,9 @@ func (c CompactStrategy) IsCollapse() bool { return c.value == "collapse" }
 
 // IsHybrid returns whether the strategy is hybrid.
 func (c CompactStrategy) IsHybrid() bool { return c.value == "hybrid" }
+
+// IsSemanticCollapse returns whether the strategy is semantic_collapse.
+func (c CompactStrategy) IsSemanticCollapse() bool { return c.value == "semantic_collapse" }
 
 // MarshalText implements encoding.TextMarshaler.
 func (c CompactStrategy) MarshalText() ([]byte, error) {
@@ -415,10 +424,19 @@ type ContextConfig struct {
 	// QualityFallbackKeepBefore overrides KeepBeforeAnchor for poor-quality compacts.
 	// 0 means use KeepBeforeAnchor * 2 (capped at 12).
 	QualityFallbackKeepBefore int `toml:"quality_fallback_keep_before,omitempty" json:"quality_fallback_keep_before,omitempty"`
+	// RollingSummary enables incremental compaction: only messages added since the
+	// most recent compact_summary are summarized. Defaults to false.
+	RollingSummary bool `toml:"rolling_summary,omitempty" json:"rolling_summary,omitempty"`
+	// RollingSummaryFullRefresh forces a full-window compact every N rolling
+	// compacts to prevent summary drift. 0 disables full refresh.
+	RollingSummaryFullRefresh int `toml:"rolling_summary_full_refresh,omitempty" json:"rolling_summary_full_refresh,omitempty"`
+	// SemanticCollapse enables collapsing assistant tool_calls + matching tool
+	// results into one summarizer message. Applied only to summarizer input.
+	SemanticCollapse bool `toml:"semantic_collapse,omitempty" json:"semantic_collapse,omitempty"`
 	// SnipCompact enables lightweight snip/collapse cleanup before LLM summarization.
 	SnipCompact bool `toml:"snip_compact,omitempty" json:"snip_compact,omitempty"`
 	// Strategy selects how tape entries are transformed into LLM messages.
-	// Valid values: summary, snip, collapse, hybrid. Empty defaults to summary.
+	// Valid values: summary, snip, collapse, hybrid, semantic_collapse. Empty defaults to summary.
 	Strategy CompactStrategy `toml:"compact_strategy" json:"compact_strategy,omitempty"`
 }
 

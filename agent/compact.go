@@ -106,9 +106,15 @@ func (a *Agent) compactSummaryVersion() int {
 
 // CompactSummaryStats carries token estimates produced while building a compact summary.
 type CompactSummaryStats struct {
-	OriginalTokens  int
-	OptimizedTokens int
-	Strategy        string
+	OriginalTokens       int
+	OptimizedTokens      int
+	Strategy             string
+	RollingSummary       bool
+	RollingFullRefresh   bool
+	RollingCount         int
+	SummarizedSinceID    int
+	PreviousSummaryChars int
+	SemanticCollapse     bool
 }
 
 // generateCompactSummary produces a summary, evaluates its quality, and records the
@@ -208,7 +214,13 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus, trigge
 
 func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context, messages []map[string]any) (string, CompactSummaryStats, error) {
 	return func(ctx context.Context, messages []map[string]any) (string, CompactSummaryStats, error) {
-		stats := CompactSummaryStats{Strategy: a.resolveContextStrategy().String()}
+		ctxCfg := a.config.AgentPolicy.Context
+		strategy := a.resolveContextStrategy()
+		semanticCollapseEnabled := ctxCfg.SemanticCollapse || strategy.IsSemanticCollapse()
+		if strategy.IsSemanticCollapse() {
+			strategy = config.CompactStrategySummary
+		}
+		stats := CompactSummaryStats{Strategy: strategy.String()}
 		// Optimize messages before sending to LLM. Prefer the raw tape entries so we
 		// can identify compact_summary/task_state by kind; fall back to the message
 		// stream passed by tape.Compact when no store is available (tests).
@@ -221,11 +233,26 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 			if err == nil && len(entries) > 0 {
 				summarizerCtx := tape.NewLastAnchorContext()
 				summarizerCtx.Strategy = config.CompactStrategySummary
-				optimized = optimizeEntriesForSummary(entries, summarizerCtx)
+				var rollingInfo RollingSummaryInfo
+				var semanticInfo SemanticCollapseInfo
+				optimized, rollingInfo, semanticInfo = optimizeEntriesForSummary(
+					entries, summarizerCtx,
+					ctxCfg.RollingSummary, ctxCfg.RollingSummaryFullRefresh, semanticCollapseEnabled,
+				)
+				stats.RollingSummary = rollingInfo.Enabled
+				stats.RollingFullRefresh = rollingInfo.FullRefresh
+				stats.RollingCount = rollingInfo.Count
+				stats.SummarizedSinceID = rollingInfo.SummarizedSinceID
+				stats.PreviousSummaryChars = rollingInfo.PreviousSummaryChars
+				stats.SemanticCollapse = semanticInfo.Enabled
 			}
 		}
 		if optimized == nil {
 			optimized = optimizeMessagesForSummary(messages)
+			if semanticCollapseEnabled {
+				optimized = tape.SemanticCollapseMessages(optimized)
+				stats.SemanticCollapse = true
+			}
 		}
 
 		originalCount := len(optimized)

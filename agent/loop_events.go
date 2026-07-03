@@ -35,13 +35,19 @@ func (a *Agent) recordHandoffEvent(tapeName, reason, anchor string, stateEntryID
 
 func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, quality CompactQuality, triggerReason string, stats CompactSummaryStats) {
 	data := map[string]any{
-		"success":          success,
-		"summary_chars":    summaryChars,
-		"quality":          quality.String(),
-		"trigger_reason":   triggerReason,
-		"original_tokens":  stats.OriginalTokens,
-		"optimized_tokens": stats.OptimizedTokens,
-		"strategy":         stats.Strategy,
+		"success":                success,
+		"summary_chars":          summaryChars,
+		"quality":                quality.String(),
+		"trigger_reason":         triggerReason,
+		"original_tokens":        stats.OriginalTokens,
+		"optimized_tokens":       stats.OptimizedTokens,
+		"strategy":               stats.Strategy,
+		"rolling_summary":        stats.RollingSummary,
+		"rolling_full_refresh":   stats.RollingFullRefresh,
+		"rolling_count":          stats.RollingCount,
+		"summarized_since_id":    stats.SummarizedSinceID,
+		"previous_summary_chars": stats.PreviousSummaryChars,
+		"semantic_collapse":      stats.SemanticCollapse,
 	}
 	if judgePass != nil {
 		data["judge_pass"] = *judgePass

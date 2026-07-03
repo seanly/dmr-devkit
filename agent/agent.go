@@ -132,6 +132,10 @@ func (a *Agent) appendSystemPromptEntry(tapeName, content string) error {
 func (a *Agent) tapeContextForTape(tapeName string) *tape.TapeContext {
 	ctxCfg := a.config.AgentPolicy.Context
 	strategy := ctxCfg.Strategy
+	// Semantic collapse is summarizer-only; for live context it is identity.
+	if strategy.IsSemanticCollapse() {
+		strategy = config.CompactStrategySummary
+	}
 	if strategy.IsSummary() && ctxCfg.SnipCompact {
 		strategy = config.CompactStrategySnip
 	}
@@ -147,13 +151,19 @@ func (a *Agent) tapeContextForTape(tapeName string) *tape.TapeContext {
 }
 
 // resolveContextStrategy returns the effective compact strategy for a tape based
-// on agent policy, honoring the legacy SnipCompact flag.
+// on agent policy, honoring the legacy SnipCompact flag. Semantic collapse is
+// treated as summary for live-context purposes; the summarizer applies the
+// collapse pass independently.
 func (a *Agent) resolveContextStrategy() config.CompactStrategy {
 	ctxCfg := a.config.AgentPolicy.Context
-	if ctxCfg.Strategy.IsSummary() && ctxCfg.SnipCompact {
+	strategy := ctxCfg.Strategy
+	if strategy.IsSemanticCollapse() {
+		strategy = config.CompactStrategySummary
+	}
+	if strategy.IsSummary() && ctxCfg.SnipCompact {
 		return config.CompactStrategySnip
 	}
-	return ctxCfg.Strategy
+	return strategy
 }
 
 // New creates a new Agent.

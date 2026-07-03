@@ -15,6 +15,20 @@ const (
 	truncatedMarker            = "\n...[truncated]"
 )
 
+// RollingSummaryInfo carries metadata about a rolling-summary optimization pass.
+type RollingSummaryInfo struct {
+	Enabled              bool
+	FullRefresh          bool
+	Count                int
+	SummarizedSinceID    int
+	PreviousSummaryChars int
+}
+
+// SemanticCollapseInfo carries metadata about whether semantic collapse was applied.
+type SemanticCollapseInfo struct {
+	Enabled bool
+}
+
 // optimizeMessagesForSummary optimizes messages before sending to LLM for summarization.
 // It performs the following optimizations:
 // 1. Extract the most recent compact summary as "previous context" and filter older ones
@@ -269,27 +283,58 @@ func calculateMessagesSize(messages []map[string]any) int {
 // extractLatestCompactSummaryFromEntries scans tape entries for the latest
 // compact_summary and returns its raw content.
 func extractLatestCompactSummaryFromEntries(entries []tape.TapeEntry) (summary string) {
-	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].Kind == "compact_summary" {
-			if data, ok := tape.ExtractCompactSummary(entries[i].Payload); ok {
-				return data.Content
-			}
+	_, summary, _, _ = findLatestCompactSummary(entries)
+	return summary
+}
+
+// findLatestCompactSummary locates the most recent compact_summary entry and
+// returns its tape ID, content, index, and the total count of compact_summary
+// entries seen. This supports rolling-summary boundary selection.
+func findLatestCompactSummary(entries []tape.TapeEntry) (id int, summary string, idx int, count int) {
+	idx = -1
+	for i, e := range entries {
+		if e.Kind != "compact_summary" {
+			continue
+		}
+		count++
+		if data, ok := tape.ExtractCompactSummary(e.Payload); ok {
+			summary = data.Content
+			id = e.ID
+			idx = i
 		}
 	}
-	return ""
+	return
 }
 
 // optimizeEntriesForSummary prepares tape entries for the summarizer LLM.
-// It extracts the latest compact_summary, builds messages from the remaining
-// entries, applies the standard message-level optimizations, and then re-injects
-// the previous summary as the first user message.
-func optimizeEntriesForSummary(entries []tape.TapeEntry, ctx *tape.TapeContext) []map[string]any {
-	previousSummary := extractLatestCompactSummaryFromEntries(entries)
+// It supports rolling summaries (only summarizing messages since the latest
+// compact_summary) and semantic collapse of tool interactions. It returns the
+// optimized message list plus metadata about the optimization pass.
+func optimizeEntriesForSummary(entries []tape.TapeEntry, ctx *tape.TapeContext, rolling bool, fullRefresh int, semanticCollapse bool) ([]map[string]any, RollingSummaryInfo, SemanticCollapseInfo) {
+	var rollingInfo RollingSummaryInfo
+	var semanticInfo SemanticCollapseInfo
 
-	// Drop all compact_summary entries so they are not summarized twice.
+	latestID, previousSummary, latestIdx, priorCount := findLatestCompactSummary(entries)
+	rollingInfo.PreviousSummaryChars = len([]rune(previousSummary))
+	rollingInfo.Count = priorCount
+
+	// Determine whether to use rolling boundary.
+	useRolling := rolling && previousSummary != "" && latestIdx >= 0
+	if useRolling && fullRefresh > 0 {
+		// Force a full refresh every N rolling compacts. The current compact counts
+		// as one of the N, so trigger when priorCount already reached the threshold.
+		if priorCount >= fullRefresh {
+			rollingInfo.FullRefresh = true
+			useRolling = false
+		}
+	}
+
 	filtered := make([]tape.TapeEntry, 0, len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		if e.Kind == "compact_summary" {
+			continue
+		}
+		if useRolling && i <= latestIdx {
 			continue
 		}
 		filtered = append(filtered, e)
@@ -300,10 +345,29 @@ func optimizeEntriesForSummary(entries []tape.TapeEntry, ctx *tape.TapeContext) 
 	}
 	ctx.Strategy = config.CompactStrategySummary
 	messages := ctx.BuildMessages(filtered)
+
+	if semanticCollapse {
+		messages = tape.SemanticCollapseMessages(messages)
+		semanticInfo.Enabled = true
+	}
+
 	optimized := optimizeMessagesForSummary(messages)
 
-	// Re-inject the previous context summary as the first message.
-	if previousSummary != "" {
+	if useRolling {
+		rollingInfo.Enabled = true
+		rollingInfo.SummarizedSinceID = latestID
+		// Re-inject the previous context summary as the first message.
+		if previousSummary != "" {
+			previousSummary = truncateRunes(previousSummary, maxPreviousSummaryRunes) + truncatedMarker
+			optimized = append([]map[string]any{{
+				"role":    previousSummaryRole,
+				"content": previousSummaryPrefix + previousSummary,
+			}}, optimized...)
+		}
+	} else if previousSummary != "" {
+		// Non-rolling mode: compact_summary entries have already been turned into
+		// system messages by BuildMessages, so just prepend the latest summary as
+		// inherited context for consistency with previous behavior.
 		previousSummary = truncateRunes(previousSummary, maxPreviousSummaryRunes) + truncatedMarker
 		optimized = append([]map[string]any{{
 			"role":    previousSummaryRole,
@@ -311,5 +375,5 @@ func optimizeEntriesForSummary(entries []tape.TapeEntry, ctx *tape.TapeContext) 
 		}}, optimized...)
 	}
 
-	return optimized
+	return optimized, rollingInfo, semanticInfo
 }
