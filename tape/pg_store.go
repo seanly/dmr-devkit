@@ -139,7 +139,10 @@ func initPGSchema(db *sql.DB, config PGStoreConfig) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_entries_tape ON entries(tape);
 		CREATE INDEX IF NOT EXISTS idx_entries_tape_kind ON entries(tape, kind);
-		CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);`
+		CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
+		CREATE INDEX IF NOT EXISTS idx_entries_tape_kind_id ON entries(tape, kind, id);
+		CREATE INDEX IF NOT EXISTS idx_entries_tape_id ON entries(tape, id);
+		CREATE INDEX IF NOT EXISTS idx_entries_anchor_name ON entries(tape, kind, (payload->>'name'));`
 
 	// Add GIN index for tsvector if enabled
 	if config.EnableTSVector {

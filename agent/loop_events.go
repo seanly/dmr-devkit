@@ -33,12 +33,19 @@ func (a *Agent) recordHandoffEvent(tapeName, reason, anchor string, stateEntryID
 	})
 }
 
-func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, quality CompactQuality) {
-	data := map[string]any{"success": success, "summary_chars": summaryChars}
+func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, quality CompactQuality, triggerReason string, stats CompactSummaryStats) {
+	data := map[string]any{
+		"success":          success,
+		"summary_chars":    summaryChars,
+		"quality":          quality.String(),
+		"trigger_reason":   triggerReason,
+		"original_tokens":  stats.OriginalTokens,
+		"optimized_tokens": stats.OptimizedTokens,
+		"strategy":         stats.Strategy,
+	}
 	if judgePass != nil {
 		data["judge_pass"] = *judgePass
 	}
-	data["quality"] = quality.String()
 	a.recordLoopEvent(tapeName, "loop:compact", data)
 }
 
@@ -75,25 +82,21 @@ func (a *Agent) performContextHandoff(ctx context.Context, tapeName, handoffName
 	if !a.llmCompactEnabled() {
 		a.Handoff(tapeName, handoffName, map[string]any{"reason": reason, "state_only": true, "profile": "minimal"})
 		a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, false)
-		a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown)
 		return false, stateEntryID
 	}
-	err := a.CompactTapeWithName(ctx, tapeName, handoffName)
+	err := a.CompactTapeWithName(ctx, tapeName, handoffName, reason)
 	if err != nil {
 		slog.Error("compact: handoff compact failed", "reason", reason, "error", err)
 		if h.CompactRequired {
 			a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, true)
-			a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown)
 			return false, stateEntryID
 		}
 		a.Handoff(tapeName, handoffName, map[string]any{
 			"reason": reason, "compact_error": err.Error(), "state_only": true,
 		})
 		a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, true)
-		a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown)
 		return false, stateEntryID
 	}
 	a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, true)
-	a.recordCompactEvent(tapeName, true, 0, nil, CompactQualityUnknown)
 	return true, stateEntryID
 }

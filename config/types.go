@@ -244,8 +244,8 @@ func (s *SystemPromptValue) Resolve(baseDir string) (string, error) {
 
 // SystemPromptEntry defines a single per-tape system prompt configuration.
 type SystemPromptEntry struct {
-	Tape         string           `toml:"tape" json:"tape"`
-	Profile      string           `toml:"profile,omitempty" json:"profile,omitempty"`
+	Tape         string            `toml:"tape" json:"tape"`
+	Profile      string            `toml:"profile,omitempty" json:"profile,omitempty"`
 	SystemPrompt SystemPromptValue `toml:"system_prompt,omitempty" json:"system_prompt,omitempty"`
 }
 
@@ -361,21 +361,21 @@ func (m *ModelConfig) SupportsVision() bool {
 
 // ToolResultMicrocompactConfig clears older compactable tool outputs on the wire before LLM requests.
 type ToolResultMicrocompactConfig struct {
-	Enabled          *bool    `toml:"enabled"`      // nil = not configured (use defaults); true/false = explicit
+	Enabled          *bool    `toml:"enabled"` // nil = not configured (use defaults); true/false = explicit
 	KeepRecent       int      `toml:"keep_recent"`
 	CompactableTools []string `toml:"compactable_tools"`
-	GapMinutes       float64  `toml:"gap_minutes"`     // wall-clock gap since last assistant reply; 0 disables time trigger
-	MaxAgeTurns      int      `toml:"max_age_turns"`   // clear tool results older than N assistant turns; 0 disables
-	SizeThreshold    int      `toml:"size_threshold"`  // immediate externalize single results larger than this many chars; 0 disables
+	GapMinutes       float64  `toml:"gap_minutes"`    // wall-clock gap since last assistant reply; 0 disables time trigger
+	MaxAgeTurns      int      `toml:"max_age_turns"`  // clear tool results older than N assistant turns; 0 disables
+	SizeThreshold    int      `toml:"size_threshold"` // immediate externalize single results larger than this many chars; 0 disables
 }
 
 // ToolResultPolicyConfig configures externalized tool payloads and aggregate budgets.
 type ToolResultPolicyConfig struct {
-	DefaultMaxChars  int    `toml:"default_max_chars"`
-	PerMessageBudget int    `toml:"per_message_budget"`
-	PreviewChars     int    `toml:"preview_chars"`
-	PersistSubdir    string `toml:"persist_subdir"`
-	SkipTools        []string `toml:"skip_tools"`
+	DefaultMaxChars  int                          `toml:"default_max_chars"`
+	PerMessageBudget int                          `toml:"per_message_budget"`
+	PreviewChars     int                          `toml:"preview_chars"`
+	PersistSubdir    string                       `toml:"persist_subdir"`
+	SkipTools        []string                     `toml:"skip_tools"`
 	Microcompact     ToolResultMicrocompactConfig `toml:"microcompact"`
 }
 
@@ -404,10 +404,17 @@ type ContextConfig struct {
 	SoftBoundary bool `toml:"soft_boundary,omitempty" json:"soft_boundary,omitempty"`
 	// KeepBeforeAnchor is how many raw messages to retain before the last anchor.
 	KeepBeforeAnchor int `toml:"keep_before_anchor,omitempty" json:"keep_before_anchor,omitempty"`
-	// RollingSummary enables incremental summary updates instead of re-summarizing everything.
-	RollingSummary bool `toml:"rolling_summary,omitempty" json:"rolling_summary,omitempty"`
+	// CompactGap is the minimum number of steps between automatic compacts.
+	// 0 uses the default (3).
+	CompactGap int `toml:"compact_gap,omitempty" json:"compact_gap,omitempty"`
+	// PressureOverrideGap allows compacts after this many steps when estimated tokens
+	// already exceed the handoff threshold. 0 uses the default (1).
+	PressureOverrideGap int `toml:"pressure_override_gap,omitempty" json:"pressure_override_gap,omitempty"`
 	// QualityFallback falls back to raw-message retention when compact summary quality is poor.
 	QualityFallback bool `toml:"quality_fallback,omitempty" json:"quality_fallback,omitempty"`
+	// QualityFallbackKeepBefore overrides KeepBeforeAnchor for poor-quality compacts.
+	// 0 means use KeepBeforeAnchor * 2 (capped at 12).
+	QualityFallbackKeepBefore int `toml:"quality_fallback_keep_before,omitempty" json:"quality_fallback_keep_before,omitempty"`
 	// SnipCompact enables lightweight snip/collapse cleanup before LLM summarization.
 	SnipCompact bool `toml:"snip_compact,omitempty" json:"snip_compact,omitempty"`
 	// Strategy selects how tape entries are transformed into LLM messages.
@@ -482,13 +489,13 @@ func DefaultHandoffConfig() HandoffConfig {
 
 // ReviewConfig configures automatic critic delegation after tools.
 type ReviewConfig struct {
-	Enabled              bool     `toml:"enabled"`
-	AfterTools           []string `toml:"after_tools"`
-	AfterToolPatterns    []string `toml:"after_tool_patterns"`
-	Chain                []string `toml:"chain"`
-	BlockOnCritical      bool     `toml:"block_on_critical"`
-	MaxChainDepth        int      `toml:"max_chain_depth"`
-	JudgeModel           string   `toml:"judge_model"`
+	Enabled           bool     `toml:"enabled"`
+	AfterTools        []string `toml:"after_tools"`
+	AfterToolPatterns []string `toml:"after_tool_patterns"`
+	Chain             []string `toml:"chain"`
+	BlockOnCritical   bool     `toml:"block_on_critical"`
+	MaxChainDepth     int      `toml:"max_chain_depth"`
+	JudgeModel        string   `toml:"judge_model"`
 }
 
 // ScaffoldingConfig selects harness verbosity profile.

@@ -62,8 +62,8 @@ func NewSQLiteTapeStoreWithDriver(dbPath, driver string, config SQLiteStoreConfi
 	}
 
 	// Serialize all SQLite access through one connection. SQLite only allows one
-	 // writer at a time even in WAL mode; pooling multiple connections makes
-	 // SQLITE_BUSY likely when goroutines append concurrently.
+	// writer at a time even in WAL mode; pooling multiple connections makes
+	// SQLITE_BUSY likely when goroutines append concurrently.
 	if driver == SQLDriverModernc {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
@@ -153,8 +153,21 @@ func (s *SQLiteTapeStore) parseFTS5Config() string {
 }
 
 func (s *SQLiteTapeStore) initBaseSchema() error {
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY AUTOINCREMENT, tape TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', meta TEXT NOT NULL DEFAULT '{}', date TEXT NOT NULL DEFAULT ''); CREATE INDEX IF NOT EXISTS idx_entries_tape ON entries(tape); CREATE INDEX IF NOT EXISTS idx_entries_tape_kind ON entries(tape, kind); CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);`)
-	return err
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY AUTOINCREMENT, tape TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', meta TEXT NOT NULL DEFAULT '{}', date TEXT NOT NULL DEFAULT '')`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_tape ON entries(tape)`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_tape_kind ON entries(tape, kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date)`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_tape_kind_id ON entries(tape, kind, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_tape_id ON entries(tape, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_anchor_name ON entries(tape, kind, json_extract(payload, '$.name'))`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteTapeStore) initFTS5() error {

@@ -79,66 +79,19 @@ func evaluateCompactSummary(summary string, state *handoff.State) CompactQuality
 
 // CompactTape compacts the current tape context into a summary and returns the summary text.
 func (a *Agent) CompactTape(ctx context.Context, tapeName string) (string, error) {
-	return a.compact(ctx, tapeName, "", "")
+	return a.compact(ctx, tapeName, "", "", "manual")
 }
 
 // CompactTapeWithName compacts with a specific anchor name (used by auto-handoff).
-func (a *Agent) CompactTapeWithName(ctx context.Context, tapeName, anchorName string) error {
-	_, err := a.compact(ctx, tapeName, anchorName, "")
+func (a *Agent) CompactTapeWithName(ctx context.Context, tapeName, anchorName, reason string) error {
+	_, err := a.compact(ctx, tapeName, anchorName, "", reason)
 	return err
 }
 
 // CompactTapeWithFocus compacts the current tape context into a summary focused on
 // the given topic. It writes a handoff/tool anchor + compact_summary + handoff/tool event.
 func (a *Agent) CompactTapeWithFocus(ctx context.Context, tapeName, focus string) (string, error) {
-	slog.Info("compact: starting focused summarization", "tape", tapeName, "focus", focus)
-
-	if !a.llmCompactEnabled() {
-		// Even without LLM summarization, a handoff is a context reset.
-		a.clearDiscoveredToolsWithReason(tapeName, "handoff")
-		if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
-			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
-		}
-		slog.Info("compact: skipped LLM summary (minimal profile)")
-		return "", nil
-	}
-
-	summary, quality, judgePass, err := a.generateCompactSummary(ctx, tapeName, focus)
-	if err != nil {
-		slog.Error("compact: focused summarization failed", "error", err)
-		return "", err
-	}
-	if quality == CompactQualityPoor {
-		slog.Warn("compact: focused summary quality is poor, falling back to raw-message retention", "tape", tapeName, "judge", judgePass)
-	}
-
-	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
-		Tape:           tapeName,
-		AnchorName:     "handoff/tool",
-		EventName:      "handoff/tool",
-		SummaryVersion: a.compactSummaryVersion(),
-		Summary:        summary,
-		Quality:        quality.String(),
-	})
-	if err != nil {
-		slog.Error("compact: focused summarization failed", "error", err)
-		return "", err
-	}
-	for _, e := range entries {
-		if e.Kind != "compact_summary" {
-			continue
-		}
-		if c, ok := e.Payload["content"].(string); ok {
-			slog.Info("compact: focused summary generated", "chars", len(c), "quality", quality.String(), "summary", c)
-			// Reset discovered-tool state after a successful compact and notify plugins.
-			a.clearDiscoveredToolsWithReason(tapeName, "handoff")
-			if err := a.hooks.OnContextReset(ctx, tapeName, "handoff"); err != nil {
-				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
-			}
-			return c, nil
-		}
-	}
-	return "", nil
+	return a.compact(ctx, tapeName, "handoff/tool", focus, "tool")
 }
 
 // compactSummaryVersion returns the configured compact_summary schema version,
@@ -151,15 +104,24 @@ func (a *Agent) compactSummaryVersion() int {
 	return version
 }
 
+// CompactSummaryStats carries token estimates produced while building a compact summary.
+type CompactSummaryStats struct {
+	OriginalTokens  int
+	OptimizedTokens int
+	Strategy        string
+}
+
 // generateCompactSummary produces a summary, evaluates its quality, and records the
 // compact event if the adversarial judge is enabled. It returns the summary text,
-// the heuristic quality rating, and the adversarial judge result.
-func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus string) (string, CompactQuality, bool, error) {
+// the heuristic quality rating, the adversarial judge result, and token stats.
+func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus string) (string, CompactQuality, bool, CompactSummaryStats, error) {
+	var stats CompactSummaryStats
 	summarizer := a.buildSummarizer(tapeName, focus)
-	summary, err := summarizer(ctx, nil)
+	summary, sstats, err := summarizer(ctx, nil)
 	if err != nil {
-		return "", CompactQualityUnknown, false, err
+		return "", CompactQualityUnknown, false, stats, err
 	}
+	stats = sstats
 
 	entries, _ := a.tape.Store.FetchAll(tapeName, nil)
 	st := handoff.LatestState(entries)
@@ -167,16 +129,15 @@ func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus stri
 	judgePass := true
 	if a.summaryJudgeEnabled() {
 		judgePass = validateCompactSummary(st, summary)
-		a.recordCompactEvent(tapeName, true, len(summary), &judgePass, quality)
 		if !judgePass {
 			slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
 		}
 	}
-	return summary, quality, judgePass, nil
+	return summary, quality, judgePass, stats, nil
 }
 
-func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string) (string, error) {
-	slog.Info("compact: starting summarization", "tape", tapeName)
+func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus, triggerReason string) (string, error) {
+	slog.Info("compact: starting summarization", "tape", tapeName, "reason", triggerReason)
 
 	if !a.llmCompactEnabled() {
 		// Even without LLM summarization, a compact is a context reset.
@@ -184,18 +145,29 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 		if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
 			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
 		}
+		a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown, triggerReason, CompactSummaryStats{})
 		slog.Info("compact: skipped LLM summary (minimal profile)")
 		return "", nil
 	}
 
-	summary, quality, judgePass, err := a.generateCompactSummary(ctx, tapeName, focus)
+	summary, quality, judgePass, stats, err := a.generateCompactSummary(ctx, tapeName, focus)
 	if err != nil {
 		slog.Error("compact: summarization failed", "error", err)
 		return "", err
 	}
-	if quality == CompactQualityPoor {
+	_ = stats
+
+	skipSummary := false
+	anchorState := map[string]any{}
+	if quality == CompactQualityPoor && a.config.AgentPolicy.Context.QualityFallback {
+		skipSummary = true
+		if fb := a.qualityFallbackKeepBefore(); fb > 0 {
+			anchorState["fallback_keep_before"] = fb
+		}
 		slog.Warn("compact: summary quality is poor, falling back to raw-message retention", "tape", tapeName, "judge", judgePass)
 	}
+
+	a.recordCompactEvent(tapeName, !skipSummary, len(summary), &judgePass, quality, triggerReason, stats)
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
 		Tape:           tapeName,
@@ -203,6 +175,8 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 		SummaryVersion: a.compactSummaryVersion(),
 		Summary:        summary,
 		Quality:        quality.String(),
+		SkipSummary:    skipSummary,
+		AnchorState:    anchorState,
 	})
 	if err != nil {
 		slog.Error("compact: failed to write compact entries", "error", err)
@@ -222,11 +196,19 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus string)
 			return c, nil
 		}
 	}
+	if skipSummary {
+		// Reset discovered-tool state even when we kept raw messages instead of a summary.
+		a.clearDiscoveredToolsWithReason(tapeName, "compact")
+		if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
+			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
+		}
+	}
 	return "", nil
 }
 
-func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context, messages []map[string]any) (string, error) {
-	return func(ctx context.Context, messages []map[string]any) (string, error) {
+func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context, messages []map[string]any) (string, CompactSummaryStats, error) {
+	return func(ctx context.Context, messages []map[string]any) (string, CompactSummaryStats, error) {
+		stats := CompactSummaryStats{Strategy: a.resolveContextStrategy().String()}
 		// Optimize messages before sending to LLM. Prefer the raw tape entries so we
 		// can identify compact_summary/task_state by kind; fall back to the message
 		// stream passed by tape.Compact when no store is available (tests).
@@ -252,6 +234,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 		// Estimate tokens using the new token estimator
 		estimator := NewTokenEstimator()
 		originalTokens := estimator.Estimate(optimized)
+		stats.OriginalTokens = originalTokens
 
 		// Fit the summarizer input into the current tape model's context budget.
 		maxInputTokens := summarizerInputBudget(a.GetCurrentModel(tapeName), a.config.AgentPolicy)
@@ -260,6 +243,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 		optimizedCount := len(optimized)
 		optimizedSize := calculateMessagesSize(optimized)
 		optimizedTokens := estimator.Estimate(optimized)
+		stats.OptimizedTokens = optimizedTokens
 
 		if originalCount > 0 {
 			slog.Info("compact: optimized messages",
@@ -282,7 +266,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 		// model/context-window that the agent is using. Fall back to the default client.
 		chatClient := a.summarizerChatClient(tapeName)
 		if chatClient == nil {
-			return "", fmt.Errorf("compact: no chat client available for summarization")
+			return "", stats, fmt.Errorf("compact: no chat client available for summarization")
 		}
 
 		// Send as a single user message containing all conversation content + prompt
@@ -303,6 +287,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 				"tape", tapeName, "attempt", attempt+1, "max_input_tokens", maxInputTokens)
 			optimized = truncateMessagesForSummary(optimized, maxInputTokens)
 			flattenedContent = flattenMessagesForSummary(optimized)
+			stats.OptimizedTokens = estimator.Estimate(optimized)
 			resp, err = chatClient.ChatRaw(ctx, client.ChatOpts{
 				Prompt:       flattenedContent + "\n\n=== 总结任务 ===\n\n" + prompt,
 				Messages:     nil,
@@ -313,7 +298,7 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 		}
 
 		if err != nil {
-			return "", err
+			return "", stats, err
 		}
 
 		rawResp := resp.Text
@@ -339,10 +324,10 @@ func (a *Agent) buildSummarizer(tapeName, focus string) func(ctx context.Context
 		}
 
 		if strings.TrimSpace(summary) == "" {
-			return "", fmt.Errorf("compact: model produced an empty summary")
+			return "", stats, fmt.Errorf("compact: model produced an empty summary")
 		}
 
-		return summary, nil
+		return summary, stats, nil
 	}
 }
 
@@ -379,4 +364,25 @@ func summarizerInputBudget(m *config.ModelConfig, agentCfg config.AgentConfig) i
 	}
 	// Small configured budget: allow at least half for input.
 	return limit / 2
+}
+
+// qualityFallbackKeepBefore returns the number of raw messages to retain before a
+// poor-quality compact anchor when QualityFallback is enabled. Explicit config
+// wins; otherwise we double KeepBeforeAnchor (with a floor and cap).
+func (a *Agent) qualityFallbackKeepBefore() int {
+	ctxCfg := a.config.AgentPolicy.Context
+	if !ctxCfg.QualityFallback {
+		return 0
+	}
+	if ctxCfg.QualityFallbackKeepBefore > 0 {
+		return ctxCfg.QualityFallbackKeepBefore
+	}
+	keep := ctxCfg.KeepBeforeAnchor * 2
+	if keep <= 0 {
+		keep = 6
+	}
+	if keep > 12 {
+		keep = 12
+	}
+	return keep
 }

@@ -108,6 +108,7 @@ opts.TapeConfig = tape.StoreConfig{
 
 - Single SQLite database with FTS5 full-text search
 - Supports: `FetchAll`, `FetchAfter`, `Query` (text search)
+- Creates composite indexes for fast anchor lookups: `(tape, kind, id)` and `(tape, id)`
 - Best for: single-node production, local apps with search
 
 ### PostgreSQL Store
@@ -125,7 +126,12 @@ opts.TapeConfig = tape.StoreConfig{
 
 - Full PostgreSQL backend
 - Supports concurrent access
+- Creates the same anchor-lookup indexes as SQLite
 - Best for: multi-node deployments, team usage
+
+### Performance Notes
+
+For the common "entries after the latest anchor" query, SQLite and PostgreSQL use the composite indexes added above. The file store still parses the entire JSONL file on every read, so it is best for short tapes or local development. For long-running conversations, prefer SQLite or PostgreSQL.
 
 ---
 

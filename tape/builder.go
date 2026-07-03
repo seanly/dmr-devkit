@@ -1,6 +1,7 @@
 package tape
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -115,7 +116,13 @@ func (b *ContextBuilder) fetchBeforeAnchor(tape, anchorName string, n int) ([]Ta
 		return nil, nil
 	}
 
-	start := anchorIdx - n
+	// If the anchor carries a quality-fallback hint, expand the raw-message window.
+	keep := n
+	if state, ok := all[anchorIdx].Payload["state"].(map[string]any); ok {
+		keep = max(keep, intFromAny(state["fallback_keep_before"]))
+	}
+
+	start := anchorIdx - keep
 	if start < 0 {
 		start = 0
 	}
@@ -153,6 +160,22 @@ func JoinedContent(msg map[string]any) string {
 		return strings.Join(v, "")
 	default:
 		return ""
+	}
+}
+
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	default:
+		return 0
 	}
 }
 

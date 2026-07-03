@@ -47,6 +47,43 @@ func TestContextBuilderReadMessagesSoftBoundary(t *testing.T) {
 	}
 }
 
+func TestContextBuilderReadMessagesSoftBoundaryFallbackKeep(t *testing.T) {
+	store := NewInMemoryTapeStore()
+	seedEntries(store)
+	b := NewContextBuilder(store)
+
+	// Expand the last anchor's raw-message window via fallback metadata.
+	entries, _ := store.FetchAll("test_tape", nil)
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == "anchor" {
+			state := map[string]any{}
+			if s, ok := entries[i].Payload["state"].(map[string]any); ok {
+				for k, v := range s {
+					state[k] = v
+				}
+			}
+			state["fallback_keep_before"] = 5
+			entries[i].Payload["state"] = state
+			break
+		}
+	}
+
+	ctx := NewSoftBoundaryContext(1)
+	msgs, err := b.ReadMessages("test_tape", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("expected fallback keep to include 4 messages, got %d", len(msgs))
+	}
+	if msgs[0]["content"] != "task 2" {
+		t.Errorf("first after-anchor content = %v, want task 2", msgs[0]["content"])
+	}
+	if msgs[3]["content"] != "answer 1" {
+		t.Errorf("last fallback content = %v, want answer 1", msgs[3]["content"])
+	}
+}
+
 func TestContextBuilderReportsMissingAnchor(t *testing.T) {
 	store := NewInMemoryTapeStore()
 	seedEntries(store)

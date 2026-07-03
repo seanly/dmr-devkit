@@ -71,7 +71,7 @@ func TestBuildSummarizer_ExtractsSummaryTag(t *testing.T) {
 	a := newSummarizerTestAgent(fake)
 	summarize := a.buildSummarizer("tape1", "")
 
-	summary, err := summarize(context.Background(), []map[string]any{
+	summary, _, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func TestBuildSummarizer_FallsBackToReasoningWhenTextEmpty(t *testing.T) {
 	a := newSummarizerTestAgent(fake)
 	summarize := a.buildSummarizer("tape1", "")
 
-	summary, err := summarize(context.Background(), []map[string]any{
+	summary, _, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestBuildSummarizer_ReturnsErrorWhenSummaryEmpty(t *testing.T) {
 	a := newSummarizerTestAgent(fake)
 	summarize := a.buildSummarizer("tape1", "")
 
-	_, err := summarize(context.Background(), []map[string]any{
+	_, _, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
 	})
 	if err == nil {
@@ -171,5 +171,141 @@ func TestCompact_PassesHandoffConfigVersion(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected compact_summary entry in tape")
+	}
+}
+
+func TestCompact_QualityFallbackSkipsPoorSummary(t *testing.T) {
+	// Summary text deliberately omits the goal so quality is rated poor.
+	fake := &summarizerFakeClient{completionQueue: []any{
+		&provider.ChatResponse{Text: "<summary>unrelated text</summary>", Usage: &provider.Usage{TotalTokens: 10}},
+	}}
+
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	llmCore := core.NewLLMCore(core.LLMCoreConfig{Model: "test-model", MaxRetries: 0})
+	llmCore.SetClientForModel("test-model", fake)
+	chat := client.NewChatClient(llmCore, tool.NewToolExecutor(), tm)
+
+	a := New(chat, tm, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			MaxToken:         100000,
+			HandoffThreshold: 0.8,
+			Scaffolding:      config.ScaffoldingConfig{Profile: "standard"},
+			Context: config.ContextConfig{
+				QualityFallback:           true,
+				QualityFallbackKeepBefore: 8,
+				KeepBeforeAnchor:          2,
+			},
+		},
+		Models: []config.ModelConfig{
+			{
+				Name:             "test-model",
+				Model:            "test-model",
+				Default:          true,
+				MaxToken:         100000,
+				HandoffThreshold: 0.8,
+			},
+		},
+	})
+
+	_ = tm.AppendEntry("qf-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+	_ = tm.AppendEntry("qf-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}))
+	_ = tm.AppendEntry("qf-tape", tape.NewTaskStateEntry(map[string]any{
+		"goal":   "implement the checkout feature",
+		"source": "test",
+	}))
+
+	if _, err := a.CompactTape(context.Background(), "qf-tape"); err != nil {
+		t.Fatalf("CompactTape failed: %v", err)
+	}
+
+	entries, _ := store.FetchAll("qf-tape", nil)
+	var foundSummary, foundAnchor bool
+	var keepBefore int
+	for _, e := range entries {
+		if e.Kind == "compact_summary" {
+			foundSummary = true
+		}
+		if e.Kind == "anchor" {
+			foundAnchor = true
+			if state, ok := e.Payload["state"].(map[string]any); ok {
+				if fb, ok := state["fallback_keep_before"].(int); ok {
+					keepBefore = fb
+				}
+			}
+		}
+	}
+	if foundSummary {
+		t.Error("expected poor summary to be skipped, but compact_summary was written")
+	}
+	if !foundAnchor {
+		t.Fatal("expected anchor to be written")
+	}
+	if keepBefore != 8 {
+		t.Errorf("fallback_keep_before = %d, want 8", keepBefore)
+	}
+}
+
+func TestCompact_RecordsMetrics(t *testing.T) {
+	fake := &summarizerFakeClient{completionQueue: []any{
+		&provider.ChatResponse{Text: "<summary>the summary</summary>", Usage: &provider.Usage{TotalTokens: 10}},
+	}}
+
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	llmCore := core.NewLLMCore(core.LLMCoreConfig{Model: "test-model", MaxRetries: 0})
+	llmCore.SetClientForModel("test-model", fake)
+	chat := client.NewChatClient(llmCore, tool.NewToolExecutor(), tm)
+
+	a := New(chat, tm, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			MaxToken:         100000,
+			HandoffThreshold: 0.8,
+			Scaffolding:      config.ScaffoldingConfig{Profile: "standard"},
+			Context:          config.ContextConfig{Strategy: config.CompactStrategyCollapse},
+		},
+		Models: []config.ModelConfig{
+			{
+				Name:             "test-model",
+				Model:            "test-model",
+				Default:          true,
+				MaxToken:         100000,
+				HandoffThreshold: 0.8,
+			},
+		},
+	})
+
+	_ = tm.AppendEntry("metrics-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+	if _, err := a.CompactTape(context.Background(), "metrics-tape"); err != nil {
+		t.Fatalf("CompactTape failed: %v", err)
+	}
+
+	entries, _ := store.FetchAll("metrics-tape", nil)
+	var found bool
+	for _, e := range entries {
+		if e.Kind != "event" {
+			continue
+		}
+		name, _ := e.Payload["name"].(string)
+		if name != "loop:compact" {
+			continue
+		}
+		found = true
+		data, _ := e.Payload["data"].(map[string]any)
+		if data["trigger_reason"] != "manual" {
+			t.Errorf("trigger_reason = %v, want manual", data["trigger_reason"])
+		}
+		if data["strategy"] != "collapse" {
+			t.Errorf("strategy = %v, want collapse", data["strategy"])
+		}
+		if _, ok := data["original_tokens"].(int); !ok {
+			t.Errorf("original_tokens missing or wrong type: %T", data["original_tokens"])
+		}
+		if _, ok := data["optimized_tokens"].(int); !ok {
+			t.Errorf("optimized_tokens missing or wrong type: %T", data["optimized_tokens"])
+		}
+	}
+	if !found {
+		t.Fatal("expected loop:compact event with metrics")
 	}
 }

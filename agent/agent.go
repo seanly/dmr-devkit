@@ -78,11 +78,11 @@ type Agent struct {
 	// cfgMu protects the two mutable config fields that can be injected after New.
 	cfgMu sync.Mutex
 
-	onToolCallMu      sync.RWMutex // protects config.OnToolCall
-	reviewRunner      ReviewDelegate
-	extendedTools     []*tool.Tool // cached extended tools from all plugins
-	extLoaded         bool         // guarded by extMu
-	extMu             sync.Mutex   // guards extendedTools and extLoaded
+	onToolCallMu  sync.RWMutex // protects config.OnToolCall
+	reviewRunner  ReviewDelegate
+	extendedTools []*tool.Tool // cached extended tools from all plugins
+	extLoaded     bool         // guarded by extMu
+	extMu         sync.Mutex   // guards extendedTools and extLoaded
 
 	toolResults *toolresult.Manager // large tool-output externalization + microcompact state
 
@@ -443,10 +443,9 @@ func (a *Agent) ContextTokenBudget(tapeName string) int {
 }
 
 // shouldCompactNow checks whether a compact is allowed at the given step.
-// It enforces a minimum 3-step gap between compacts for the same tape, but
-// relaxes that gap when estimated tokens have already crossed the configured
-// handoff threshold (so rapid token growth after many tool calls can still be
-// compacted). It resets if the step counter wraps (new conversation cycle).
+// It enforces a minimum gap between compacts for the same tape, but relaxes
+// that gap when estimated tokens have already crossed the configured handoff
+// threshold. It resets if the step counter wraps (new conversation cycle).
 func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, limit int, threshold float64) bool {
 	ts := a.tapeStates.getOrCreate(tapeName)
 	ts.mu.Lock()
@@ -465,15 +464,23 @@ func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, lim
 		gap = step - lastCompact
 	}
 
-	// Normal rule: allow if never compacted or at least 3 steps have passed.
-	if !hasCompacted || gap >= 3 {
+	compactGap := a.config.AgentPolicy.Context.CompactGap
+	if compactGap <= 0 {
+		compactGap = 3
+	}
+	pressureOverrideGap := a.config.AgentPolicy.Context.PressureOverrideGap
+	if pressureOverrideGap <= 0 {
+		pressureOverrideGap = 1
+	}
+
+	// Normal rule: allow if never compacted or at least compactGap steps have passed.
+	if !hasCompacted || gap >= compactGap {
 		return true
 	}
 
 	// Pressure override: if the context is already above the handoff threshold,
-	// allow compaction after just one step so tool-heavy runs don't overflow
-	// while waiting for the normal 3-step cooldown.
-	if limit > 0 && estimatedTokens > 0 && gap >= 1 {
+	// allow compaction after pressureOverrideGap steps.
+	if limit > 0 && estimatedTokens > 0 && gap >= pressureOverrideGap {
 		if float64(estimatedTokens) >= float64(limit)*threshold {
 			return true
 		}

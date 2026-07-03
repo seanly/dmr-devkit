@@ -106,56 +106,97 @@ Used to:
 
 ---
 
-## Configuration
+## Compaction Metrics
 
-### Agent Config
+Every compaction writes a `loop:compact` event to the tape with the following fields:
 
-```go
-type AgentConfig struct {
-    MaxContextTokens    int     // Hard limit for context window
-    CompactThreshold    float64 // Trigger compaction at this ratio (0.8 = 80%)
-    CompactPreserveLast int     // Keep N recent entries uncompressed
+```json
+{
+  "success": true,
+  "summary_chars": 1200,
+  "quality": "good",
+  "judge_pass": true,
+  "trigger_reason": "proactive",
+  "original_tokens": 15000,
+  "optimized_tokens": 12000,
+  "strategy": "summary"
 }
 ```
 
-### Per-Tool Limits
+- `trigger_reason`: `preemptive`, `proactive`, `overflow`, `manual`, or `tool`.
+- `original_tokens`: estimated tokens before summarizer optimization.
+- `optimized_tokens`: estimated tokens actually sent to the summarizer.
+- `strategy`: the configured `compact_strategy`.
 
-```go
-tool := &tool.Tool{
-    Spec: tool.ToolSpec{
-        Name:           "search_web",
-        MaxResultChars: 8000,  // Externalize if result > 8K chars
-    },
-}
-```
-
-### Global Default
-
-```go
-// In agent.Config
-defaultToolResultMaxChars = 8000  // Applied when MaxResultChars = 0
-```
+These metrics are also emitted as a span event when an OpenTelemetry-aligned tracer is configured.
 
 ---
 
-## Compaction Policy (`agent/compact.go`)
+## Quality Fallback
 
-The compaction orchestrator decides WHEN and WHAT to compact:
+When LLM summarization produces a poor-quality summary, `quality_fallback = true` changes behavior:
 
-```go
-func (a *Agent) shouldCompact(tapeName string) bool {
-    // Check token estimate against threshold
-    // Consider last compact time
-    // Respect minimum interval between compacts
-}
+1. The bad summary is **not written** to the tape.
+2. Only an anchor + event are written.
+3. The anchor carries a hint to expand the soft boundary so more raw messages are retained on the next turn.
 
-func (a *Agent) compact(tapeName string) error {
-    // 1. Determine compact range
-    // 2. Call prompt compaction
-    // 3. Write anchor
-    // 4. Update last compact tracking
-}
+This keeps `task_state` + recent raw messages available instead of injecting a misleading summary.
+
+```toml
+[agent.context]
+quality_fallback = true
+quality_fallback_keep_before = 8   # explicit raw-message window for poor compacts
 ```
+
+If `quality_fallback_keep_before` is `0`, the agent doubles `keep_before_anchor` (with a floor of 6 and a cap of 12).
+
+---
+
+## Compact Cadence
+
+Automatic compacts are rate-limited to avoid burning tokens on every step:
+
+```toml
+[agent.context]
+compact_gap = 3               # minimum steps between automatic compacts
+pressure_override_gap = 1     # allow early compact when already above threshold
+```
+
+Defaults match the previous hardcoded behavior. Lower values make compaction more aggressive; higher values let the context grow longer before summarizing.
+
+---
+
+## Configuration
+
+### Context Config
+
+```toml
+[agent.context]
+persist_system_prompt = false
+soft_boundary = true
+keep_before_anchor = 3
+compact_strategy = "summary"
+
+compact_gap = 3
+pressure_override_gap = 1
+
+quality_fallback = false
+quality_fallback_keep_before = 0
+```
+
+- `compact_strategy`: `summary` (default), `snip`, `collapse`, `hybrid`.
+- `compact_gap` / `pressure_override_gap`: control automatic compact cadence.
+- `quality_fallback` / `quality_fallback_keep_before`: control poor-summary fallback.
+
+### Agent Config
+
+```toml
+[agent]
+max_token = 128000
+handoff_threshold = 0.75
+```
+
+`max_token` is the context budget; `handoff_threshold` is the ratio at which preemptive/proactive compacts trigger.
 
 ---
 
@@ -180,3 +221,12 @@ func (a *Agent) compact(tapeName string) error {
 1. **Monitor token usage** via `AfterAgentRun` hook
 2. **Set workspace cleanup** for externalized results
 3. **Configure SQLite FTS5** for fast tape queries
+
+---
+
+## Migrating from earlier configs
+
+- `rolling_summary` was removed; it was never implemented and had no runtime effect.
+- `quality_fallback = true` now skips writing poor summaries to tape entirely (previously it only suppressed them at read time).
+- New metrics appear automatically in `loop:compact` events; no config change required.
+- `compact_gap` and `pressure_override_gap` default to the previous hardcoded values, so omitting them preserves old behavior.

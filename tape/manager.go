@@ -129,8 +129,10 @@ type CompactOpts struct {
 	EventName      string // optional, defaults to "compact"
 	SummaryVersion int    // 0 means use default CompactSummarySchemaVersion
 	Summarizer     func(ctx context.Context, messages []map[string]any) (string, error)
-	Summary        string // optional pre-generated summary; when set, Summarizer is not called
-	Quality        string // optional quality label: good/fair/poor
+	Summary        string         // optional pre-generated summary; when set, Summarizer is not called
+	Quality        string         // optional quality label: good/fair/poor
+	SkipSummary    bool           // when true, write only anchor + event (no compact_summary)
+	AnchorState    map[string]any // optional extra state stored in the anchor payload
 }
 
 // Compact generates a summary of the current tape context and creates a compact anchor.
@@ -163,14 +165,14 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 
 	// 3. Generate summary (or use pre-generated summary)
 	summary := opts.Summary
-	if summary == "" && opts.Summarizer != nil {
+	if summary == "" && !opts.SkipSummary && opts.Summarizer != nil {
 		generated, err := opts.Summarizer(ctx, messages)
 		if err != nil {
 			return nil, fmt.Errorf("summarize: %w", err)
 		}
 		summary = generated
 	}
-	if strings.TrimSpace(summary) == "" {
+	if !opts.SkipSummary && strings.TrimSpace(summary) == "" {
 		return nil, fmt.Errorf("compact summary is empty")
 	}
 
@@ -179,22 +181,29 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	if name == "" {
 		name = fmt.Sprintf("compact:%s", time.Now().UTC().Format("20060102-150405"))
 	}
-	anchor := NewAnchorEntry(name, map[string]any{
+	anchorState := map[string]any{
 		"entries_count":  len(entries),
 		"messages_count": len(messages),
-	})
+	}
+	for k, v := range opts.AnchorState {
+		anchorState[k] = v
+	}
+	anchor := NewAnchorEntry(name, anchorState)
 	if err := m.Store.Append(opts.Tape, anchor); err != nil {
 		return nil, fmt.Errorf("append compact anchor: %w", err)
 	}
 
 	// 5. Create compact_summary entry (independent entry after anchor)
-	summaryVersion := opts.SummaryVersion
-	if summaryVersion <= 0 {
-		summaryVersion = CompactSummarySchemaVersion
-	}
-	summaryEntry := NewCompactSummaryEntryWithSourceAndQuality(summary, summaryVersion, name, opts.Quality)
-	if err := m.Store.Append(opts.Tape, summaryEntry); err != nil {
-		return nil, fmt.Errorf("append compact summary: %w", err)
+	var summaryEntry TapeEntry
+	if !opts.SkipSummary {
+		summaryVersion := opts.SummaryVersion
+		if summaryVersion <= 0 {
+			summaryVersion = CompactSummarySchemaVersion
+		}
+		summaryEntry = NewCompactSummaryEntryWithSourceAndQuality(summary, summaryVersion, name, opts.Quality)
+		if err := m.Store.Append(opts.Tape, summaryEntry); err != nil {
+			return nil, fmt.Errorf("append compact summary: %w", err)
+		}
 	}
 
 	// 6. Record compact event
@@ -203,15 +212,20 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 		eventName = "compact"
 	}
 	event := NewEventEntry(eventName, map[string]any{
-		"anchor":         name,
-		"summary_length": len(summary),
-		"quality":        opts.Quality,
+		"anchor":          name,
+		"summary_length":  len(summary),
+		"quality":         opts.Quality,
+		"skipped_summary": opts.SkipSummary,
 	})
 	if err := m.Store.Append(opts.Tape, event); err != nil {
 		return nil, fmt.Errorf("append compact event: %w", err)
 	}
 
-	return []TapeEntry{anchor, summaryEntry, event}, nil
+	out := []TapeEntry{anchor, event}
+	if !opts.SkipSummary {
+		out = []TapeEntry{anchor, summaryEntry, event}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------

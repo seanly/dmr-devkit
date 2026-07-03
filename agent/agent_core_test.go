@@ -190,6 +190,41 @@ func TestShouldCompactNow(t *testing.T) {
 	}
 }
 
+func TestShouldCompactNow_CustomGaps(t *testing.T) {
+	a := New(nil, nil, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			Context: config.ContextConfig{
+				CompactGap:          5,
+				PressureOverrideGap: 2,
+			},
+		},
+	})
+
+	if !a.shouldCompactNow("tape1", 1, 0, 0, 0.8) {
+		t.Error("first compact should be allowed")
+	}
+	a.recordCompactStep("tape1", 1)
+
+	if a.shouldCompactNow("tape1", 3, 0, 0, 0.8) {
+		t.Error("step 3 should be blocked (gap < 5)")
+	}
+
+	if !a.shouldCompactNow("tape1", 6, 0, 0, 0.8) {
+		t.Error("step 6 should be allowed (gap == 5)")
+	}
+	a.recordCompactStep("tape1", 6)
+
+	// Pressure override needs gap >= 2, so step 7 is blocked.
+	if a.shouldCompactNow("tape1", 7, 9000, 10000, 0.85) {
+		t.Error("step 7 should be blocked (pressure override gap < 2)")
+	}
+
+	// Step 8 with pressure is allowed.
+	if !a.shouldCompactNow("tape1", 8, 9000, 10000, 0.85) {
+		t.Error("step 8 should be allowed under pressure with gap == 2")
+	}
+}
+
 func TestCanHandoffTool(t *testing.T) {
 	store := tape.NewInMemoryTapeStore()
 	tm := tape.NewTapeManager(store)
