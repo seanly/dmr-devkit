@@ -309,3 +309,74 @@ func TestCompact_RecordsMetrics(t *testing.T) {
 		t.Fatal("expected loop:compact event with metrics")
 	}
 }
+
+func TestCompact_LLMJudge(t *testing.T) {
+	fake := &summarizerFakeClient{completionQueue: []any{
+		&provider.ChatResponse{Text: "<summary>we are refactoring the handoff pipeline</summary>", Usage: &provider.Usage{TotalTokens: 10}},
+		&provider.ChatResponse{Text: `{"pass": true, "reason": "goal preserved"}`, Usage: &provider.Usage{TotalTokens: 5}},
+	}}
+
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	llmCore := core.NewLLMCore(core.LLMCoreConfig{Model: "test-model", MaxRetries: 0})
+	llmCore.SetClientForModel("test-model", fake)
+	chat := client.NewChatClient(llmCore, tool.NewToolExecutor(), tm)
+
+	a := New(chat, tm, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			MaxToken:         100000,
+			HandoffThreshold: 0.8,
+			Scaffolding:      config.ScaffoldingConfig{Profile: "standard"},
+			Context: config.ContextConfig{
+				SummaryJudge: "llm",
+			},
+		},
+		Models: []config.ModelConfig{
+			{
+				Name:             "test-model",
+				Model:            "test-model",
+				Default:          true,
+				MaxToken:         100000,
+				HandoffThreshold: 0.8,
+			},
+		},
+	})
+
+	_ = tm.AppendEntry("llm-judge-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+	_ = tm.AppendEntry("llm-judge-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}))
+	_ = tm.AppendEntry("llm-judge-tape", tape.NewTaskStateEntry(map[string]any{
+		"goal":   "refactor handoff pipeline",
+		"source": "test",
+	}))
+
+	if _, err := a.CompactTape(context.Background(), "llm-judge-tape"); err != nil {
+		t.Fatalf("CompactTape failed: %v", err)
+	}
+
+	if len(fake.calls) != 2 {
+		t.Fatalf("expected 2 LLM calls (summarizer + judge), got %d", len(fake.calls))
+	}
+
+	entries, _ := store.FetchAll("llm-judge-tape", nil)
+	var found bool
+	for _, e := range entries {
+		if e.Kind != "event" {
+			continue
+		}
+		name, _ := e.Payload["name"].(string)
+		if name != "loop:compact" {
+			continue
+		}
+		found = true
+		data, _ := e.Payload["data"].(map[string]any)
+		if jp, ok := data["judge_pass"].(bool); !ok || !jp {
+			t.Errorf("judge_pass = %v, want true", data["judge_pass"])
+		}
+		if jr, ok := data["judge_reason"].(string); !ok || jr == "" {
+			t.Errorf("judge_reason = %v, want non-empty", data["judge_reason"])
+		}
+	}
+	if !found {
+		t.Fatal("expected loop:compact event with LLM judge results")
+	}
+}

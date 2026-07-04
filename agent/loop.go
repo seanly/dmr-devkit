@@ -122,11 +122,12 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	}
 
 	// Auto-apply per-tape model from config (first time only; respects runtime ,model.switch).
+	// Config-driven assignment is not persisted as an override so config changes remain effective.
 	ts := a.tapeStates.get(tapeName)
 	hasOverride := ts != nil && ts.modelOverride != ""
 	if !hasOverride {
 		if modelName := a.modelNameForTape(tapeName); modelName != "" {
-			if switchErr := a.SwitchModel(tapeName, modelName); switchErr != nil {
+			if switchErr := a.switchModel(tapeName, modelName); switchErr != nil {
 				slog.Warn("tape model override failed", "model", modelName, "tape", tapeName, "error", switchErr)
 			}
 		}

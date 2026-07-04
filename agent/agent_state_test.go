@@ -123,7 +123,7 @@ func TestRestoreTapeState_ModelOverride(t *testing.T) {
 	if err := a.SwitchModel("tape1", "smart"); err != nil {
 		t.Fatalf("SwitchModel: %v", err)
 	}
-	a.persistTapeState("tape1")
+	// SwitchModel persists automatically; no manual persist needed.
 
 	a2 := New(nil, tm, nil, Config{Models: models})
 	a2.restoreTapeState("tape1")
@@ -131,6 +131,66 @@ func TestRestoreTapeState_ModelOverride(t *testing.T) {
 	m := a2.GetCurrentModel("tape1")
 	if m == nil || m.Name != "smart" {
 		t.Errorf("restored model = %v, want smart", m)
+	}
+}
+
+func TestSwitchModel_PersistsAgentState(t *testing.T) {
+	models := []config.ModelConfig{
+		{Name: "fast", Model: "gpt-4o-mini", Default: true, APIKey: "k"},
+		{Name: "smart", Model: "gpt-4o", APIKey: "k"},
+	}
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	a := New(nil, tm, nil, Config{Models: models})
+
+	if err := a.SwitchModel("tape1", "smart"); err != nil {
+		t.Fatalf("SwitchModel: %v", err)
+	}
+
+	entries, err := store.FetchAll("tape1", nil)
+	if err != nil {
+		t.Fatalf("FetchAll: %v", err)
+	}
+	var found bool
+	for _, e := range entries {
+		if e.Kind != "agent_state" {
+			continue
+		}
+		if mo, ok := e.Payload["model_override"].(string); ok && mo == "smart" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected agent_state entry with model_override=smart after SwitchModel")
+	}
+}
+
+func TestRestoreTapeState_DoesNotDoublePersist(t *testing.T) {
+	models := []config.ModelConfig{
+		{Name: "fast", Model: "gpt-4o-mini", Default: true, APIKey: "k"},
+		{Name: "smart", Model: "gpt-4o", APIKey: "k"},
+	}
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	a := New(nil, tm, nil, Config{Models: models})
+
+	if err := a.SwitchModel("tape1", "smart"); err != nil {
+		t.Fatalf("SwitchModel: %v", err)
+	}
+
+	a2 := New(nil, tm, nil, Config{Models: models})
+	a2.restoreTapeState("tape1")
+
+	entries, _ := store.FetchAll("tape1", nil)
+	count := 0
+	for _, e := range entries {
+		if e.Kind == "agent_state" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 agent_state entry, got %d", count)
 	}
 }
 

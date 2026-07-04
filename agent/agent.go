@@ -342,9 +342,9 @@ func (a *Agent) GetCurrentModel(tapeName string) *config.ModelConfig {
 	return nil
 }
 
-// SwitchModel switches the model for the given tape (in-memory only).
-// It also resolves skill model route hints via AgentConfig.SkillModels.
-func (a *Agent) SwitchModel(tapeName, modelName string) error {
+// switchModel performs the actual model switch in memory without persisting.
+// Callers that need durability (explicit user/workflow switches) should use SwitchModel.
+func (a *Agent) switchModel(tapeName, modelName string) error {
 	if strings.TrimSpace(modelName) == "" {
 		return core.NewError(core.ErrInvalidInput, "model name is empty", nil)
 	}
@@ -367,6 +367,17 @@ func (a *Agent) SwitchModel(tapeName, modelName string) error {
 		}
 	}
 	return core.NewError(core.ErrConfig, fmt.Sprintf("model not found: %s", modelName), nil)
+}
+
+// SwitchModel switches the model for the given tape and persists the override
+// to the tape so it survives process restarts and new Agent instances.
+// It also resolves skill model route hints via AgentConfig.SkillModels.
+func (a *Agent) SwitchModel(tapeName, modelName string) error {
+	if err := a.switchModel(tapeName, modelName); err != nil {
+		return err
+	}
+	a.persistTapeState(tapeName)
+	return nil
 }
 
 const maxChatClients = 100
@@ -1024,7 +1035,7 @@ func (a *Agent) restoreTapeState(tapeName string) {
 	ts.mu.Unlock()
 
 	if modelOverride != "" {
-		if err := a.SwitchModel(tapeName, modelOverride); err != nil {
+		if err := a.switchModel(tapeName, modelOverride); err != nil {
 			slog.Warn("agent: failed to restore model override", "tape", tapeName, "model", modelOverride, "error", err)
 		}
 	}

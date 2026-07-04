@@ -119,13 +119,14 @@ type CompactSummaryStats struct {
 
 // generateCompactSummary produces a summary, evaluates its quality, and records the
 // compact event if the adversarial judge is enabled. It returns the summary text,
-// the heuristic quality rating, the adversarial judge result, and token stats.
-func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus string) (string, CompactQuality, bool, CompactSummaryStats, error) {
+// the heuristic quality rating, the adversarial judge result, an optional reason
+// from the LLM judge, and token stats.
+func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus string) (string, CompactQuality, bool, string, CompactSummaryStats, error) {
 	var stats CompactSummaryStats
 	summarizer := a.buildSummarizer(tapeName, focus)
 	summary, sstats, err := summarizer(ctx, nil)
 	if err != nil {
-		return "", CompactQualityUnknown, false, stats, err
+		return "", CompactQualityUnknown, false, "", stats, err
 	}
 	stats = sstats
 
@@ -133,13 +134,31 @@ func (a *Agent) generateCompactSummary(ctx context.Context, tapeName, focus stri
 	st := handoff.LatestState(entries)
 	quality := evaluateCompactSummary(summary, st)
 	judgePass := true
+	judgeReason := ""
 	if a.summaryJudgeEnabled() {
-		judgePass = validateCompactSummary(st, summary)
+		if strings.EqualFold(a.config.AgentPolicy.Context.SummaryJudge, "llm") {
+			chatClient := a.summaryJudgeChatClient(tapeName)
+			if chatClient == nil {
+				slog.Warn("compact: no chat client for LLM judge, falling back to heuristic judge", "tape", tapeName)
+				judgePass = validateCompactSummary(st, summary)
+			} else {
+				pass, reason, err := validateCompactSummaryWithLLM(ctx, chatClient, st, summary, tapeName)
+				if err != nil {
+					slog.Warn("compact: LLM judge failed, falling back to heuristic judge", "tape", tapeName, "error", err)
+					judgePass = validateCompactSummary(st, summary)
+				} else {
+					judgePass = pass
+					judgeReason = reason
+				}
+			}
+		} else {
+			judgePass = validateCompactSummary(st, summary)
+		}
 		if !judgePass {
-			slog.Warn("compact: summary failed adversarial judge", "tape", tapeName)
+			slog.Warn("compact: summary failed adversarial judge", "tape", tapeName, "reason", judgeReason)
 		}
 	}
-	return summary, quality, judgePass, stats, nil
+	return summary, quality, judgePass, judgeReason, stats, nil
 }
 
 func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus, triggerReason string) (string, error) {
@@ -151,17 +170,16 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus, trigge
 		if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
 			slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
 		}
-		a.recordCompactEvent(tapeName, false, 0, nil, CompactQualityUnknown, triggerReason, CompactSummaryStats{})
+		a.recordCompactEvent(tapeName, false, 0, nil, "", CompactQualityUnknown, triggerReason, CompactSummaryStats{})
 		slog.Info("compact: skipped LLM summary (minimal profile)")
 		return "", nil
 	}
 
-	summary, quality, judgePass, stats, err := a.generateCompactSummary(ctx, tapeName, focus)
+	summary, quality, judgePass, judgeReason, stats, err := a.generateCompactSummary(ctx, tapeName, focus)
 	if err != nil {
 		slog.Error("compact: summarization failed", "error", err)
 		return "", err
 	}
-	_ = stats
 
 	skipSummary := false
 	anchorState := map[string]any{}
@@ -173,7 +191,7 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, focus, trigge
 		slog.Warn("compact: summary quality is poor, falling back to raw-message retention", "tape", tapeName, "judge", judgePass)
 	}
 
-	a.recordCompactEvent(tapeName, !skipSummary, len(summary), &judgePass, quality, triggerReason, stats)
+	a.recordCompactEvent(tapeName, !skipSummary, len(summary), &judgePass, judgeReason, quality, triggerReason, stats)
 
 	entries, err := a.tape.Compact(ctx, tape.CompactOpts{
 		Tape:           tapeName,
@@ -366,6 +384,24 @@ func (a *Agent) summarizerChatClient(tapeName string) *client.ChatClient {
 		return cc
 	}
 	return a.defaultChat
+}
+
+// summaryJudgeChatClient returns the chat client used for the LLM-based summary
+// adversarial judge. If SummaryJudgeModel is configured, it builds a dedicated
+// client for that model; otherwise it uses the same client as the summarizer.
+func (a *Agent) summaryJudgeChatClient(tapeName string) *client.ChatClient {
+	judgeModel := strings.TrimSpace(a.config.AgentPolicy.Context.SummaryJudgeModel)
+	if judgeModel == "" {
+		return a.summarizerChatClient(tapeName)
+	}
+	for i := range a.config.Models {
+		m := &a.config.Models[i]
+		if m.Name == judgeModel || m.Model == judgeModel {
+			return a.buildChatClient(m)
+		}
+	}
+	slog.Warn("compact: configured summary_judge_model not found, falling back to tape model", "model", judgeModel)
+	return a.summarizerChatClient(tapeName)
 }
 
 // summarizerInputBudget returns the maximum number of prompt tokens that should

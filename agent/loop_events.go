@@ -33,7 +33,7 @@ func (a *Agent) recordHandoffEvent(tapeName, reason, anchor string, stateEntryID
 	})
 }
 
-func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, quality CompactQuality, triggerReason string, stats CompactSummaryStats) {
+func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, judgeReason string, quality CompactQuality, triggerReason string, stats CompactSummaryStats) {
 	data := map[string]any{
 		"success":                success,
 		"summary_chars":          summaryChars,
@@ -51,6 +51,9 @@ func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars i
 	}
 	if judgePass != nil {
 		data["judge_pass"] = *judgePass
+	}
+	if judgeReason != "" {
+		data["judge_reason"] = judgeReason
 	}
 	a.recordLoopEvent(tapeName, "loop:compact", data)
 }

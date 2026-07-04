@@ -438,6 +438,13 @@ type ContextConfig struct {
 	// Strategy selects how tape entries are transformed into LLM messages.
 	// Valid values: summary, snip, collapse, hybrid, semantic_collapse. Empty defaults to summary.
 	Strategy CompactStrategy `toml:"compact_strategy" json:"compact_strategy,omitempty"`
+	// SummaryJudge selects the adversarial judge strategy for compact summaries.
+	// "heuristic" (default) uses lightweight substring matching.
+	// "llm" uses the current tape model to perform semantic evaluation.
+	SummaryJudge string `toml:"summary_judge,omitempty" json:"summary_judge,omitempty"`
+	// SummaryJudgeModel optionally overrides the model used for summary judging.
+	// Empty means use the tape's current model (same as the summarizer).
+	SummaryJudgeModel string `toml:"summary_judge_model,omitempty" json:"summary_judge_model,omitempty"`
 }
 
 // AgentConfig configures the agent loop.
