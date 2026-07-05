@@ -123,6 +123,12 @@ func dummyEchoTool() *tool.Tool {
 
 func newIntegrationAgent(t *testing.T, fake *multiTurnFake, tm *tape.TapeManager) *Agent {
 	t.Helper()
+	a, _ := newIntegrationAgentWithExecutor(t, fake, tm)
+	return a
+}
+
+func newIntegrationAgentWithExecutor(t *testing.T, fake *multiTurnFake, tm *tape.TapeManager) (*Agent, *tool.ToolExecutor) {
+	t.Helper()
 	llmCore := core.NewLLMCore(core.LLMCoreConfig{Model: "test-model", MaxRetries: 0})
 	llmCore.SetClientForModel("test-model", fake)
 	exec := tool.NewToolExecutor()
@@ -153,7 +159,7 @@ func newIntegrationAgent(t *testing.T, fake *multiTurnFake, tm *tape.TapeManager
 		Tools: []*tool.Tool{dummyEchoTool()},
 	})
 	a.SetExecutor(exec)
-	return a
+	return a, exec
 }
 
 func TestLongSessionWithCompact(t *testing.T) {
@@ -275,6 +281,80 @@ func TestLongSessionResumePreservesDiscoveredTools(t *testing.T) {
 	}
 
 	_ = ctx
+}
+
+func TestAllToolCallsDeniedIncludesDetails(t *testing.T) {
+	ctx := context.Background()
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+
+	fake := &multiTurnFake{
+		responses: []multiTurnResponse{
+			{
+				toolCalls: []provider.ToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: provider.ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"hello"}`,
+						},
+					},
+				},
+				usage: provider.Usage{PromptTokens: 100, CompletionTokens: 5, TotalTokens: 105},
+			},
+			{
+				toolCalls: []provider.ToolCall{
+					{
+						ID:   "call_2",
+						Type: "function",
+						Function: provider.ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"hello again"}`,
+						},
+					},
+				},
+				usage: provider.Usage{PromptTokens: 120, CompletionTokens: 5, TotalTokens: 125},
+			},
+			{
+				toolCalls: []provider.ToolCall{
+					{
+						ID:   "call_3",
+						Type: "function",
+						Function: provider.ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"hello yet again"}`,
+						},
+					},
+				},
+				usage: provider.Usage{PromptTokens: 140, CompletionTokens: 5, TotalTokens: 145},
+			},
+		},
+	}
+
+	a, exec := newIntegrationAgentWithExecutor(t, fake, tm)
+	exec.BatchBeforeToolCall = func(_ context.Context, items []tool.BatchCheckItem) map[int]error {
+		denied := make(map[int]error)
+		for i, item := range items {
+			denied[i] = fmt.Errorf("denied by policy: test policy violation for %s", item.Tool.Spec.Name)
+		}
+		return denied
+	}
+
+	const tapeName = "all-denied-details-test"
+	result, err := a.Run(ctx, tapeName, "Run echo.", 0)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !strings.Contains(result.Output, "all tool calls denied by policy, stopping") {
+		t.Fatalf("expected output to contain stop message, got %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "echo: denied by policy: test policy violation for echo") {
+		t.Fatalf("expected output to contain denial details, got %q", result.Output)
+	}
 }
 
 func TestClientTruncationLastResort(t *testing.T) {

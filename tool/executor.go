@@ -594,9 +594,13 @@ func errorPayloadForTool(toolName string, err error, defaultKind core.ErrorKind)
 			Message: se.Message,
 		}
 	}
+	msg := err.Error()
+	if defaultKind != core.ErrDenied {
+		msg = fmt.Sprintf("tool %q handler error: %v", toolName, err)
+	}
 	return &core.ErrorPayload{
 		Kind:    defaultKind,
-		Message: fmt.Sprintf("tool %q handler error: %v", toolName, err),
+		Message: msg,
 	}
 }
 

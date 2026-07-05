@@ -567,13 +567,22 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			// Check if all tool calls in this round were denied
 			allDenied := len(result.ToolResults) > 0
 			hasMeaningfulComment := false
-			for _, tr := range result.ToolResults {
+			var denialDetails []string
+			for i, tr := range result.ToolResults {
 				if m, ok := tr.(map[string]any); ok {
 					if kind, _ := m["kind"].(string); kind == "denied" {
-						if msg, _ := m["message"].(string); msg != "" {
+						msg, _ := m["message"].(string)
+						if msg != "" {
 							if strings.Contains(msg, "denied by user") && len(msg) > len("denied by user: ") {
 								hasMeaningfulComment = true
 							}
+							detail := msg
+							if i < len(result.ToolCalls) {
+								if name := result.ToolCalls[i].Function.Name; name != "" {
+									detail = fmt.Sprintf("%s: %s", name, msg)
+								}
+							}
+							denialDetails = append(denialDetails, detail)
 						}
 						continue
 					}
@@ -582,35 +591,27 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				break
 			}
 			if allDenied {
+				baseMsg := "all tool calls denied by policy, stopping"
 				if hasMeaningfulComment {
-					// User provided feedback; give model more chances to adjust
-					if consecutiveDenies >= 4 {
-						msg := "all tool calls denied by policy despite user feedback, stopping"
-						if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "denied"})); err != nil {
-							slog.Warn("tape append failed", "tape", tapeName, "error", err)
-						}
-						return &Result{
-							Output:           msg,
-							Steps:            step,
-							PromptTokens:     lastPromptTokens,
-							CompletionTokens: lastCompletionTokens,
-						}, toolIterations, nil
-					}
+					baseMsg = "all tool calls denied by policy despite user feedback, stopping"
+				}
+				stop := (hasMeaningfulComment && consecutiveDenies >= 4) || (!hasMeaningfulComment && consecutiveDenies >= 2)
+				if !stop {
 					consecutiveDenies++
 				} else {
-					consecutiveDenies++
-					if consecutiveDenies >= 2 {
-						msg := "all tool calls denied by policy, stopping"
-						if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "denied"})); err != nil {
-							slog.Warn("tape append failed", "tape", tapeName, "error", err)
-						}
-						return &Result{
-							Output:           msg,
-							Steps:            step,
-							PromptTokens:     lastPromptTokens,
-							CompletionTokens: lastCompletionTokens,
-						}, toolIterations, nil
+					msg := baseMsg
+					if len(denialDetails) > 0 {
+						msg = fmt.Sprintf("%s:\n- %s", baseMsg, strings.Join(denialDetails, "\n- "))
 					}
+					if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "denied"})); err != nil {
+						slog.Warn("tape append failed", "tape", tapeName, "error", err)
+					}
+					return &Result{
+						Output:           msg,
+						Steps:            step,
+						PromptTokens:     lastPromptTokens,
+						CompletionTokens: lastCompletionTokens,
+					}, toolIterations, nil
 				}
 			} else {
 				consecutiveDenies = 0
