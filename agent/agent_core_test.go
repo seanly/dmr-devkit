@@ -225,32 +225,32 @@ func TestShouldCompactNow_CustomGaps(t *testing.T) {
 	}
 }
 
-func TestCanHandoffTool(t *testing.T) {
+func TestCanCompactTool(t *testing.T) {
 	store := tape.NewInMemoryTapeStore()
 	tm := tape.NewTapeManager(store)
 	a := New(nil, tm, nil, Config{})
 
-	// Empty tape: allow first handoff
-	if !a.CanHandoffTool("tape1") {
-		t.Error("empty tape should allow handoff")
+	// Empty tape: allow first compact
+	if !a.CanCompactTool("tape1") {
+		t.Error("empty tape should allow compact")
 	}
 
-	// Add an anchor (simulating a previous handoff)
-	_ = store.Append("tape1", tape.NewAnchorEntry("handoff/tool", nil))
+	// Add an anchor (simulating a previous compact)
+	_ = store.Append("tape1", tape.NewAnchorEntry("compact", nil))
 
 	// Only a few entries after anchor: still blocked
 	_ = store.Append("tape1", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hi"}))
 	_ = store.Append("tape1", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hello"}))
-	if a.CanHandoffTool("tape1") {
-		t.Error("should block handoff with only 2 messages after anchor")
+	if a.CanCompactTool("tape1") {
+		t.Error("should block compact with only 2 messages after anchor")
 	}
 
 	// Add more entries to reach threshold
 	for i := 0; i < 4; i++ {
 		_ = store.Append("tape1", tape.NewMessageEntry(map[string]any{"role": "user", "content": fmt.Sprintf("msg%d", i)}))
 	}
-	if !a.CanHandoffTool("tape1") {
-		t.Error("should allow handoff with 6 messages after anchor")
+	if !a.CanCompactTool("tape1") {
+		t.Error("should allow compact with 6 messages after anchor")
 	}
 }
 

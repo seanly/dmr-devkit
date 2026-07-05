@@ -69,7 +69,7 @@ func TestBuildSummarizer_ExtractsSummaryTag(t *testing.T) {
 		&provider.ChatResponse{Text: "<summary>the summary</summary>", Usage: &provider.Usage{TotalTokens: 10}},
 	}}
 	a := newSummarizerTestAgent(fake)
-	summarize := a.buildSummarizer("tape1", "")
+	summarize := a.buildSummarizer("tape1")
 
 	summary, _, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
@@ -91,7 +91,7 @@ func TestBuildSummarizer_FallsBackToReasoningWhenTextEmpty(t *testing.T) {
 		},
 	}}
 	a := newSummarizerTestAgent(fake)
-	summarize := a.buildSummarizer("tape1", "")
+	summarize := a.buildSummarizer("tape1")
 
 	summary, _, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
@@ -109,7 +109,7 @@ func TestBuildSummarizer_ReturnsErrorWhenSummaryEmpty(t *testing.T) {
 		&provider.ChatResponse{Text: "", Reasoning: "", Usage: &provider.Usage{TotalTokens: 10}},
 	}}
 	a := newSummarizerTestAgent(fake)
-	summarize := a.buildSummarizer("tape1", "")
+	summarize := a.buildSummarizer("tape1")
 
 	_, _, err := summarize(context.Background(), []map[string]any{
 		{"role": "user", "content": "hello"},
@@ -175,7 +175,9 @@ func TestCompact_PassesHandoffConfigVersion(t *testing.T) {
 }
 
 func TestCompact_QualityFallbackSkipsPoorSummary(t *testing.T) {
-	// Summary text deliberately omits the goal so quality is rated poor.
+	// Summary text is only 14 chars, so evaluateCompactSummary rates it Poor (< 20).
+	// QualityFallback is enabled, so the summary should be skipped and an anchor with
+	// fallback_keep_before should be written instead.
 	fake := &summarizerFakeClient{completionQueue: []any{
 		&provider.ChatResponse{Text: "<summary>unrelated text</summary>", Usage: &provider.Usage{TotalTokens: 10}},
 	}}
@@ -210,10 +212,6 @@ func TestCompact_QualityFallbackSkipsPoorSummary(t *testing.T) {
 
 	_ = tm.AppendEntry("qf-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
 	_ = tm.AppendEntry("qf-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}))
-	_ = tm.AppendEntry("qf-tape", tape.NewTaskStateEntry(map[string]any{
-		"goal":   "implement the checkout feature",
-		"source": "test",
-	}))
 
 	if _, err := a.CompactTape(context.Background(), "qf-tape"); err != nil {
 		t.Fatalf("CompactTape failed: %v", err)
@@ -310,10 +308,9 @@ func TestCompact_RecordsMetrics(t *testing.T) {
 	}
 }
 
-func TestCompact_LLMJudge(t *testing.T) {
+func TestCompact_HeuristicQuality(t *testing.T) {
 	fake := &summarizerFakeClient{completionQueue: []any{
 		&provider.ChatResponse{Text: "<summary>we are refactoring the handoff pipeline</summary>", Usage: &provider.Usage{TotalTokens: 10}},
-		&provider.ChatResponse{Text: `{"pass": true, "reason": "goal preserved"}`, Usage: &provider.Usage{TotalTokens: 5}},
 	}}
 
 	store := tape.NewInMemoryTapeStore()
@@ -327,9 +324,7 @@ func TestCompact_LLMJudge(t *testing.T) {
 			MaxToken:         100000,
 			HandoffThreshold: 0.8,
 			Scaffolding:      config.ScaffoldingConfig{Profile: "standard"},
-			Context: config.ContextConfig{
-				SummaryJudge: "llm",
-			},
+			Context: config.ContextConfig{},
 		},
 		Models: []config.ModelConfig{
 			{
@@ -344,17 +339,14 @@ func TestCompact_LLMJudge(t *testing.T) {
 
 	_ = tm.AppendEntry("llm-judge-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
 	_ = tm.AppendEntry("llm-judge-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}))
-	_ = tm.AppendEntry("llm-judge-tape", tape.NewTaskStateEntry(map[string]any{
-		"goal":   "refactor handoff pipeline",
-		"source": "test",
-	}))
 
 	if _, err := a.CompactTape(context.Background(), "llm-judge-tape"); err != nil {
 		t.Fatalf("CompactTape failed: %v", err)
 	}
 
-	if len(fake.calls) != 2 {
-		t.Fatalf("expected 2 LLM calls (summarizer + judge), got %d", len(fake.calls))
+	// After lean compact: only 1 LLM call (summarizer), no separate judge call.
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 LLM call (summarizer only), got %d", len(fake.calls))
 	}
 
 	entries, _ := store.FetchAll("llm-judge-tape", nil)
@@ -369,14 +361,12 @@ func TestCompact_LLMJudge(t *testing.T) {
 		}
 		found = true
 		data, _ := e.Payload["data"].(map[string]any)
-		if jp, ok := data["judge_pass"].(bool); !ok || !jp {
-			t.Errorf("judge_pass = %v, want true", data["judge_pass"])
-		}
-		if jr, ok := data["judge_reason"].(string); !ok || jr == "" {
-			t.Errorf("judge_reason = %v, want non-empty", data["judge_reason"])
+		quality, ok := data["quality"].(string)
+		if !ok || quality != "fair" {
+			t.Errorf("quality = %v, want fair", data["quality"])
 		}
 	}
 	if !found {
-		t.Fatal("expected loop:compact event with LLM judge results")
+		t.Fatal("expected loop:compact event")
 	}
 }

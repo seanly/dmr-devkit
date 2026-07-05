@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
 
@@ -26,8 +25,6 @@ func RegisterAssertion(name string, fn AssertionFunc) {
 }
 
 func init() {
-	RegisterAssertion("task_state_field_present", assertTaskStateFieldPresent)
-	RegisterAssertion("task_state_constraint", assertTaskStateConstraint)
 	RegisterAssertion("tool_called", assertToolCalled)
 	RegisterAssertion("tool_not_called", assertToolNotCalled)
 	RegisterAssertion("tape_entry_kind", assertTapeEntryKind)
@@ -39,7 +36,6 @@ func init() {
 	RegisterAssertion("tool_result_success", assertToolResultSuccess)
 	RegisterAssertion("tool_call_count", assertToolCallCount)
 	RegisterAssertion("context_key_preserved", assertContextKeyPreserved)
-	RegisterAssertion("state_constraint_priority", assertStateConstraintPriority)
 	RegisterAssertion("event_order", assertEventOrder)
 }
 
@@ -410,37 +406,6 @@ func shellCommandPrefix(cmd string) string {
 
 // Built-in assertions
 
-func assertTaskStateFieldPresent(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
-	st := handoff.LatestState(entries)
-	if st == nil {
-		return false, "expected=task_state present; actual=no task_state entries", nil
-	}
-	switch a.Field {
-	case "goal":
-		if st.Goal != "" {
-			return true, fmt.Sprintf("expected=goal present; actual=%s", st.Goal), nil
-		}
-		return false, "expected=goal present; actual=empty", nil
-	default:
-		return false, "", fmt.Errorf("unknown task_state field %q", a.Field)
-	}
-}
-
-func assertTaskStateConstraint(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
-	st := handoff.LatestState(entries)
-	if st == nil || st.Constraints == nil {
-		return false, fmt.Sprintf("expected=constraint %s=%s; actual=no constraints", a.Key, a.Value), nil
-	}
-	v, ok := st.Constraints[a.Key]
-	if !ok {
-		return false, fmt.Sprintf("expected=constraint %s=%s; actual=key missing", a.Key, a.Value), nil
-	}
-	if v == a.Value {
-		return true, fmt.Sprintf("expected=constraint %s=%s; actual=%s", a.Key, a.Value, v), nil
-	}
-	return false, fmt.Sprintf("expected=constraint %s=%s; actual=%s", a.Key, a.Value, v), nil
-}
-
 func assertToolCalled(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
 	count := countToolCalls(entries, a.Name)
 	min := max1(a.Min)
@@ -660,7 +625,7 @@ func eventNames(entries []tape.TapeEntry) []string {
 }
 
 func assertContextKeyPreserved(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
-	// Look at the last compact_summary and latest task_state for the key/value.
+	// Check the last compact_summary for the key.
 	var summary string
 	for _, e := range entries {
 		if e.Kind == "compact_summary" {
@@ -668,67 +633,13 @@ func assertContextKeyPreserved(entries []tape.TapeEntry, a Assertion) (bool, str
 			summary = content
 		}
 	}
-	st := handoff.LatestState(entries)
-	present := false
-	if st != nil && st.Constraints != nil {
-		if v, ok := st.Constraints[a.Key]; ok && v == a.Value {
-			present = true
-		}
+	if summary == "" || a.Key == "" {
+		return false, fmt.Sprintf("expected=%s=%s preserved; actual=missing", a.Key, a.Value), nil
 	}
-	if summary != "" && a.Key != "" {
-		if strings.Contains(summary, a.Key) {
-			present = true
-		}
-	}
-	if present {
+	if strings.Contains(summary, a.Key) {
 		return true, fmt.Sprintf("expected=%s=%s preserved; actual=preserved", a.Key, a.Value), nil
 	}
 	return false, fmt.Sprintf("expected=%s=%s preserved; actual=missing", a.Key, a.Value), nil
-}
-
-func assertStateConstraintPriority(entries []tape.TapeEntry, a Assertion) (bool, string, error) {
-	expected := a.Names
-	if len(expected) == 0 {
-		return false, "", fmt.Errorf("state_constraint_priority requires names")
-	}
-	// Walk all task_state entries in tape order; for each expected key, the final
-	// state's value should match the last value observed (latest instruction wins).
-	latest := latestConstraintValues(entries)
-	st := handoff.LatestState(entries)
-	if st == nil || st.Constraints == nil {
-		return false, fmt.Sprintf("expected=priority %v; actual=no constraints", expected), nil
-	}
-	for _, key := range expected {
-		want, ok := latest[key]
-		if !ok {
-			return false, fmt.Sprintf("expected=priority key %s; actual=never set", key), nil
-		}
-		got, ok := st.Constraints[key]
-		if !ok {
-			return false, fmt.Sprintf("expected=priority key %s; actual=missing in final state", key), nil
-		}
-		if got != want {
-			return false, fmt.Sprintf("expected=priority key %s=%s; actual=%s", key, want, got), nil
-		}
-	}
-	return true, fmt.Sprintf("expected=priority %v; actual=final state matches latest values", expected), nil
-}
-
-func latestConstraintValues(entries []tape.TapeEntry) map[string]string {
-	latest := map[string]string{}
-	for _, e := range entries {
-		if e.Kind != "task_state" {
-			continue
-		}
-		st, err := handoff.StateFromPayload(e.Payload)
-		if err != nil || st == nil || st.Constraints == nil {
-			continue
-		}
-		for k, v := range st.Constraints {
-			latest[k] = v
-		}
-	}
-	return latest
 }
 
 func looksLikeError(s string) bool {

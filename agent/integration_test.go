@@ -226,15 +226,6 @@ func TestLongSessionWithCompact(t *testing.T) {
 	if compactSummaries == 0 {
 		t.Errorf("expected at least one compact_summary entry")
 	}
-
-	st := a.latestTaskState(tapeName)
-	if st == nil {
-		t.Fatal("expected latest task_state")
-	}
-	goalLower := strings.ToLower(st.Goal)
-	if !strings.Contains(goalLower, "echo") && !strings.Contains(goalLower, "repeatedly") {
-		t.Fatalf("expected goal to contain 'echo' or 'repeatedly', got %q", st.Goal)
-	}
 }
 
 func TestLongSessionResumePreservesDiscoveredTools(t *testing.T) {
@@ -431,13 +422,5 @@ func TestCompactPreservesGoal(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(result.Output), "paris") {
 		t.Fatalf("expected final response to reference goal (Paris), got %q", result.Output)
-	}
-
-	st := a.latestTaskState(tapeName)
-	if st == nil {
-		t.Fatal("expected latest task_state")
-	}
-	if !strings.Contains(strings.ToLower(st.Goal), "paris") {
-		t.Fatalf("expected preserved goal to contain 'paris', got %q", st.Goal)
 	}
 }

@@ -33,7 +33,7 @@ func (a *Agent) handleContextOverflow(
 
 	// 1. Snapshot task state and compact (or state-only fallback)
 	compactOK, _ := a.performContextHandoff(ctx, tapeName, handoffName, "overflow", step)
-	if !compactOK && a.handoffCfg().CompactRequired {
+	if !compactOK && a.compactCfg().CompactRequired {
 		return false, core.New(core.ErrKindTemporary, fmt.Sprintf("auto-compact failed at step %d", step)).
 			Phase(core.PhaseCompact).With("step", step).Build()
 	}

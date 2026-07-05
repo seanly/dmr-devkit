@@ -253,7 +253,6 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(userPayload)); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
-	a.initTaskStateFromPrompt(tapeName, prompt)
 
 	lastPromptTokens := 0
 	lastCompletionTokens := 0
@@ -299,7 +298,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			HistoryAfterEntryID: histAfter,
 			MaxTokens:           a.completionMaxTokensForTape(tapeName),
 			ToolResultManager:   trManager,
-			ContextLimit:        a.handoffContextLimit(tapeName),
+			ContextLimit:        a.compactContextLimit(tapeName),
 		}
 		if model := a.GetCurrentModel(tapeName); model != nil && !model.SupportsVision() {
 			opts.StripImageParts = true
@@ -314,15 +313,15 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		// Pre-check: Estimate tokens before calling API to avoid wasting a call
 		// if context is likely to overflow. This is a best-effort optimization.
 		if histAfter <= 0 && a.preemptiveCompactEnabled() {
-			estimatedTokens := a.estimateContextTokens(tapeName, tapeCtx)
+			estimatedTokens := tokensEst
 			a.contextBudgetForTape(tapeName).UpdateEstimated(estimatedTokens)
 			if estimatedTokens > 0 && a.shouldAutoHandoffByEstimate(tapeName, estimatedTokens) {
 				slog.Info("compact: preemptive trigger", "estimated_tokens", estimatedTokens)
-				limit := a.handoffContextLimit(tapeName)
-				threshold := a.handoffThreshold(tapeName)
+				limit := a.compactContextLimit(tapeName)
+				threshold := a.compactThreshold(tapeName)
 				if a.shouldCompactNow(tapeName, step, estimatedTokens, limit, threshold) {
 					handoffName := fmt.Sprintf("auto:preemptive:%s", time.Now().UTC().Format("20060102-150405"))
-					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "preemptive", step); ok || a.taskStateEnabled() {
+					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "preemptive", step); ok {
 						slog.Info("compact: preemptive handoff done", "anchor", handoffName)
 						a.recordCompactStep(tapeName, step)
 
@@ -549,7 +548,6 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				}
 			}
 			a.recordToolRound(tapeName, step, toolNames, denyCount)
-			a.updateTaskStateAfterToolRound(ctx, tapeName, step)
 			review := a.runPostToolReview(ctx, tapeName, step, toolNames, result.ToolResults)
 			if review.Feedback != "" {
 				_ = a.tape.AppendEntry(tapeName, tape.NewSystemEntry(review.Feedback))
@@ -655,8 +653,8 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if result.Usage != nil && a.shouldAutoHandoff(tapeName, result.Usage) {
 				pt, _ := intFromUsageMap(result.Usage, "prompt_tokens")
 				a.contextBudgetForTape(tapeName).UpdateReported(pt)
-				limit := a.handoffContextLimit(tapeName)
-				threshold := a.handoffThreshold(tapeName)
+				limit := a.compactContextLimit(tapeName)
+				threshold := a.compactThreshold(tapeName)
 
 				if !a.shouldCompactNow(tapeName, step, pt, limit, threshold) {
 					slog.Warn("compact: skipped (too soon after last compact)", "current_step", step)
@@ -664,7 +662,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					slog.Info("compact: triggered", "prompt_tokens", pt, "limit", limit, "threshold", threshold, "effective_limit", int(float64(limit)*threshold))
 
 					handoffName := fmt.Sprintf("auto:token-threshold:%s", time.Now().UTC().Format("20060102-150405"))
-					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "proactive", step); ok || a.taskStateEnabled() {
+					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "proactive", step); ok {
 						slog.Info("compact: proactive handoff done", "anchor", handoffName)
 					} else {
 						slog.Error("compact: proactive handoff failed")

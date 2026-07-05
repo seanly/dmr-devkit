@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
 
@@ -13,7 +12,9 @@ func TestWriteTapeEntriesRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.json")
 	entries := []tape.TapeEntry{
-		tape.NewTaskStateEntry(handoff.NewState("goal", "heuristic").ToPayload()),
+			tape.NewMessageEntry(map[string]any{
+			"role": "user", "content": "hello",
+			}),
 	}
 	if err := WriteTapeEntries(path, entries); err != nil {
 		t.Fatal(err)

@@ -39,7 +39,6 @@ func (b *ContextBuilder) ReadMessages(tape string, ctx *TapeContext) ([]map[stri
 			beforeCtx := &TapeContext{
 				AnchorMode:    NoAnchor,
 				KeepSummary:   false,
-				KeepTaskState: false,
 				Strategy:      ctx.Strategy,
 			}
 			beforeMsgs := b.BuildMessages(before, beforeCtx)
@@ -181,27 +180,9 @@ func intFromAny(v any) int {
 
 func buildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]any {
 	if ctx == nil {
-		ctx = &TapeContext{KeepSummary: true, KeepTaskState: true}
+		ctx = &TapeContext{KeepSummary: true}
 	}
 	var messages []map[string]any
-	var taskStateBlock string
-	if ctx.KeepTaskState {
-		for i := len(entries) - 1; i >= 0; i-- {
-			if entries[i].Kind == "task_state" {
-				if block, ok := formatTaskStateBlock(entries[i].Payload); ok {
-					taskStateBlock = block
-				}
-				break
-			}
-		}
-	}
-	if taskStateBlock != "" {
-		messages = append(messages, map[string]any{
-			"role":         "system",
-			"content":      taskStateBlock,
-			"context_kind": "task_state",
-		})
-	}
 	for _, e := range entries {
 		switch e.Kind {
 		case "message":
@@ -233,9 +214,9 @@ func buildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]any {
 					"context_kind": "compact_summary",
 				})
 			}
-		case "task_state", "handoff_packet", "content_replacement":
-			// task_state injected above (latest only); handoff_packet audit-only
-			// anchor, event, error, exec_* , fork entries are not sent to LLM
+		case "handoff_packet", "content_replacement":
+			// handoff_packet audit-only
+			// anchor, event, error, exec_*, fork entries are not sent to LLM
 		}
 	}
 	return messages

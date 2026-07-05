@@ -8,7 +8,7 @@ import (
 // structuredCompactPrompt asks the model to produce a structured summary
 // wrapped in <summary> tags. We intentionally do NOT ask for an <analysis>
 // section so the model cannot leak its thought process into the stored summary.
-const structuredCompactPrompt = `Your task is to create a detailed, self-contained summary of the conversation so far. The summary will become the "shared understanding" used to continue the conversation after a context handoff.
+const structuredCompactPrompt = `Your task is to create a detailed, self-contained summary of the conversation so far. The summary will become the "shared understanding" used to continue the conversation after a context compact.
 
 CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 
@@ -77,7 +77,7 @@ Requirements:
 - Do NOT output <analysis> tags, markdown code fences, or meta-commentary about how you produced the summary.`
 
 // continueAfterCompactPrompt is used after preemptive/proactive compact to help LLM continue smoothly.
-const continueAfterCompactPrompt = `I have compacted the conversation history to manage context size. The summary above and the [TaskState v1] block capture:
+const continueAfterCompactPrompt = `I have compacted the conversation history to manage context size. The summary above captures:
 
 - **Your original request and intent**
 - **Key work completed**: files examined, modified, or created
@@ -85,7 +85,7 @@ const continueAfterCompactPrompt = `I have compacted the conversation history to
 - **Pending tasks** that still need attention
 - **Current status**: what was being worked on immediately before this compact
 
-Please continue from where we left off. Use the summary and task state as your working memory. If you need specific details from earlier in the conversation, use tapeSearch or ask the user rather than guessing.`
+Please continue from where we left off. Use the summary as your working memory. If you need specific details from earlier in the conversation, use tapeSearch or ask the user rather than guessing.`
 
 var (
 	reSummaryTag   = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)

@@ -33,27 +33,15 @@ func (a *Agent) recordHandoffEvent(tapeName, reason, anchor string, stateEntryID
 	})
 }
 
-func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, judgePass *bool, judgeReason string, quality CompactQuality, triggerReason string, stats CompactSummaryStats) {
+func (a *Agent) recordCompactEvent(tapeName string, success bool, summaryChars int, quality CompactQuality, triggerReason string, stats CompactSummaryStats) {
 	data := map[string]any{
-		"success":                success,
-		"summary_chars":          summaryChars,
-		"quality":                quality.String(),
-		"trigger_reason":         triggerReason,
-		"original_tokens":        stats.OriginalTokens,
-		"optimized_tokens":       stats.OptimizedTokens,
-		"strategy":               stats.Strategy,
-		"rolling_summary":        stats.RollingSummary,
-		"rolling_full_refresh":   stats.RollingFullRefresh,
-		"rolling_count":          stats.RollingCount,
-		"summarized_since_id":    stats.SummarizedSinceID,
-		"previous_summary_chars": stats.PreviousSummaryChars,
-		"semantic_collapse":      stats.SemanticCollapse,
-	}
-	if judgePass != nil {
-		data["judge_pass"] = *judgePass
-	}
-	if judgeReason != "" {
-		data["judge_reason"] = judgeReason
+		"success":         success,
+		"summary_chars":   summaryChars,
+		"quality":         quality.String(),
+		"trigger_reason":  triggerReason,
+		"original_tokens": stats.OriginalTokens,
+		"optimized_tokens": stats.OptimizedTokens,
+		"strategy":        stats.Strategy,
 	}
 	a.recordLoopEvent(tapeName, "loop:compact", data)
 }
@@ -79,10 +67,10 @@ func (a *Agent) recordRunEnd(tapeName string, step, toolIterations, promptTokens
 	})
 }
 
-// performContextHandoff snapshots task state then runs compact or anchor-only fallback.
+// performContextHandoff runs compact or anchor-only fallback.
 func (a *Agent) performContextHandoff(ctx context.Context, tapeName, handoffName, reason string, step int) (compactOK bool, stateEntryID int) {
 	stateEntryID = a.snapshotTaskStateBeforeHandoff(tapeName, step)
-	h := a.handoffCfg()
+	h := a.compactCfg()
 	if !h.CompactAfterState {
 		a.Handoff(tapeName, handoffName, map[string]any{"reason": reason})
 		a.recordHandoffEvent(tapeName, reason, handoffName, stateEntryID, false)

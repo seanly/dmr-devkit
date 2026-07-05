@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/seanly/dmr-devkit/client"
-	"github.com/seanly/dmr-devkit/handoff"
 )
 
 // summaryJudgeResult is the structured output expected from the LLM judge.
@@ -18,49 +17,29 @@ type summaryJudgeResult struct {
 }
 
 // validateCompactSummary performs a lightweight adversarial check: the summary
-// should retain the task goal (or a significant token from it).
-func validateCompactSummary(state *handoff.State, summary string) bool {
-	if state == nil || strings.TrimSpace(state.Goal) == "" {
-		return summary != ""
-	}
-	if strings.TrimSpace(summary) == "" {
-		return false
-	}
-	goal := strings.ToLower(strings.TrimSpace(state.Goal))
-	summaryLower := strings.ToLower(summary)
-	if strings.Contains(summaryLower, goal) {
-		return true
-	}
-	for _, word := range strings.Fields(goal) {
-		if len(word) < 4 {
-			continue
-		}
-		if strings.Contains(summaryLower, word) {
-			return true
-		}
-	}
-	return false
+// should be non-empty and contain at least a few words.
+func validateCompactSummary(summary string) bool {
+	return strings.TrimSpace(summary) != "" && len(strings.Fields(summary)) >= 3
 }
 
 // validateCompactSummaryWithLLM uses the current tape model to semantically evaluate
-// whether the compact summary preserves the task state. It returns the judge decision,
+// whether the compact summary is coherent and complete. It returns the judge decision,
 // an explanatory reason, and an error. When an error is returned (e.g. LLM call failure
 // or unparseable output), the caller should fall back to validateCompactSummary.
 func validateCompactSummaryWithLLM(
 	ctx context.Context,
 	chatClient *client.ChatClient,
-	state *handoff.State,
 	summary string,
 	tapeName string,
 ) (bool, string, error) {
-	if state == nil || strings.TrimSpace(state.Goal) == "" {
-		return summary != "", "", nil
-	}
 	if strings.TrimSpace(summary) == "" {
 		return false, "summary is empty", nil
 	}
+	if chatClient == nil {
+		return false, "chat client is nil", fmt.Errorf("chat client is nil")
+	}
 
-	prompt := buildSummaryJudgePrompt(state, summary)
+	prompt := buildSummaryJudgePrompt(summary)
 	resp, err := chatClient.ChatRaw(ctx, client.ChatOpts{
 		Prompt:       prompt,
 		SystemPrompt: summaryJudgeSystemPrompt,
@@ -88,29 +67,29 @@ func validateCompactSummaryWithLLM(
 	return result.Pass, result.Reason, nil
 }
 
-const summaryJudgeSystemPrompt = `You are a strict but fair evaluator. Your job is to decide whether a conversation summary accurately preserves the user's task state.
+const summaryJudgeSystemPrompt = `You are a strict but fair evaluator. Your job is to decide whether a conversation summary is coherent and complete.
 
-You will be given the current TaskState (goal, constraints, pending items, active files) and the summary generated after a context compaction. Accept paraphrases, synonyms, and equivalent Chinese expressions; do not require the summary to contain the exact original wording.
+You will be given a summary generated after a context compaction. Evaluate whether it captures the user's intent and preserves critical technical details.
 
 Output ONLY a single JSON object with no markdown code fences and no extra commentary:
-{"pass": true|false, "reason": "short explanation in the same language as the conversation"}`
+{"pass": true|false, "reason": "short explanation in the same language as the summary"}`
 
-// buildSummaryJudgePrompt renders the judge prompt from task state and summary.
-func buildSummaryJudgePrompt(state *handoff.State, summary string) string {
+// buildSummaryJudgePrompt renders the judge prompt from summary.
+func buildSummaryJudgePrompt(summary string) string {
 	return fmt.Sprintf(`%s
 
 [Summary to Evaluate]
 %s
 
 Evaluate the summary on these criteria:
-1. Does it capture the user's goal and intent, including paraphrases or equivalent expressions?
-2. Does it preserve the active constraints?
+1. Does it capture the user's goal and intent?
+2. Does it preserve active constraints and requirements?
 3. Does it preserve pending tasks?
 4. Does it preserve active files and artifacts?
 5. Is it free of contradictions or hallucinations?
 
 Output ONLY JSON: {"pass": true|false, "reason": "..."}`,
-		state.FormatPromptBlock(),
+		summaryJudgeSystemPrompt,
 		summary,
 	)
 }

@@ -1,9 +1,6 @@
 package tape
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/seanly/dmr-devkit/config"
 )
 
@@ -29,11 +26,9 @@ type TapeContext struct {
 	KeepBefore   int
 	// KeepSummary controls whether compact_summary entries are injected.
 	KeepSummary bool
-	// KeepTaskState controls whether task_state entries are injected.
-	KeepTaskState bool
 	// SkipPoorSummaries suppresses compact_summary entries whose quality is "poor".
 	// This is used when quality fallback is enabled: a bad summary is dropped and
-	// the model relies on task_state + recent raw messages instead.
+	// the model relies on recent raw messages instead.
 	SkipPoorSummaries bool
 	// Strategy selects how tape entries are transformed into LLM messages.
 	Strategy config.CompactStrategy
@@ -44,17 +39,17 @@ type TapeContext struct {
 
 // NewLastAnchorContext creates a TapeContext that windows from the last anchor.
 func NewLastAnchorContext() *TapeContext {
-	return &TapeContext{AnchorMode: LastAnchorS, KeepSummary: true, KeepTaskState: true}
+	return &TapeContext{AnchorMode: LastAnchorS, KeepSummary: true}
 }
 
 // NewNamedAnchorContext creates a TapeContext that windows from a named anchor.
 func NewNamedAnchorContext(name string) *TapeContext {
-	return &TapeContext{AnchorMode: NamedAnchor, AnchorName: name, KeepSummary: true, KeepTaskState: true}
+	return &TapeContext{AnchorMode: NamedAnchor, AnchorName: name, KeepSummary: true}
 }
 
 // NewNoAnchorContext creates a TapeContext with no anchor filtering.
 func NewNoAnchorContext() *TapeContext {
-	return &TapeContext{AnchorMode: NoAnchor, KeepSummary: true, KeepTaskState: true}
+	return &TapeContext{AnchorMode: NoAnchor, KeepSummary: true}
 }
 
 // NewSoftBoundaryContext creates a TapeContext that keeps KeepBefore raw messages
@@ -64,11 +59,10 @@ func NewSoftBoundaryContext(keepBefore int) *TapeContext {
 		keepBefore = 0
 	}
 	return &TapeContext{
-		AnchorMode:    LastAnchorS,
-		SoftBoundary:  true,
-		KeepBefore:    keepBefore,
-		KeepSummary:   true,
-		KeepTaskState: true,
+		AnchorMode:   LastAnchorS,
+		SoftBoundary: true,
+		KeepBefore:   keepBefore,
+		KeepSummary:  true,
 	}
 }
 
@@ -100,27 +94,9 @@ func (tc *TapeContext) SetBuilder(b *ContextBuilder) {
 
 func defaultBuildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]any {
 	if ctx == nil {
-		ctx = &TapeContext{KeepSummary: true, KeepTaskState: true}
+		ctx = &TapeContext{KeepSummary: true}
 	}
 	var messages []map[string]any
-	var taskStateBlock string
-	if ctx.KeepTaskState {
-		for i := len(entries) - 1; i >= 0; i-- {
-			if entries[i].Kind == "task_state" {
-				if block, ok := formatTaskStateBlock(entries[i].Payload); ok {
-					taskStateBlock = block
-				}
-				break
-			}
-		}
-	}
-	if taskStateBlock != "" {
-		messages = append(messages, map[string]any{
-			"role":         "system",
-			"content":      taskStateBlock,
-			"context_kind": "task_state",
-		})
-	}
 	for _, e := range entries {
 		switch e.Kind {
 		case "message":
@@ -152,100 +128,10 @@ func defaultBuildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]an
 					"context_kind": "compact_summary",
 				})
 			}
-		case "task_state", "handoff_packet", "content_replacement":
-			// task_state injected above (latest only); handoff_packet audit-only
-			// anchor, event, error, exec_* , fork entries are not sent to LLM
+		case "handoff_packet", "content_replacement":
+			// handoff_packet audit-only
+			// anchor, event, error, exec_*, fork entries are not sent to LLM
 		}
 	}
 	return messages
-}
-
-// formatTaskStateBlock renders task_state payload for LLM injection.
-func formatTaskStateBlock(payload map[string]any) (string, bool) {
-	content, ok := payload["goal"].(string)
-	if !ok || content == "" {
-		return "", false
-	}
-	var b strings.Builder
-	b.WriteString("goal: ")
-	b.WriteString(content)
-	b.WriteByte('\n')
-	if constraints, ok := payload["constraints"].(map[string]any); ok && len(constraints) > 0 {
-		b.WriteString("constraints:\n")
-		for k, v := range constraints {
-			b.WriteString("  ")
-			b.WriteString(k)
-			b.WriteString(": ")
-			b.WriteString(fmt.Sprint(v))
-			b.WriteByte('\n')
-		}
-	}
-	if pending, ok := payload["pending"].([]any); ok && len(pending) > 0 {
-		b.WriteString("pending:\n")
-		for _, item := range pending {
-			if m, ok := item.(map[string]any); ok {
-				if summary, ok := m["summary"].(string); ok && summary != "" {
-					b.WriteString("  - ")
-					b.WriteString(summary)
-					b.WriteByte('\n')
-				}
-			}
-		}
-	}
-	if completed, ok := payload["completed"].([]any); ok && len(completed) > 0 {
-		b.WriteString("completed:\n")
-		for _, item := range completed {
-			if m, ok := item.(map[string]any); ok {
-				if summary, ok := m["summary"].(string); ok && summary != "" {
-					b.WriteString("  - ")
-					b.WriteString(summary)
-					b.WriteByte('\n')
-				}
-			}
-		}
-	}
-	if la, ok := payload["last_action"].(string); ok && la != "" {
-		b.WriteString("last_action: ")
-		b.WriteString(la)
-		b.WriteByte('\n')
-	}
-	if af, ok := payload["active_files"].([]any); ok && len(af) > 0 {
-		b.WriteString("active_files: ")
-		for i, x := range af {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(fmt.Sprint(x))
-		}
-		b.WriteByte('\n')
-	}
-	if artifacts, ok := payload["artifacts"].([]any); ok && len(artifacts) > 0 {
-		b.WriteString("artifacts:\n")
-		for _, item := range artifacts {
-			if m, ok := item.(map[string]any); ok {
-				typ, _ := m["type"].(string)
-				ref, _ := m["ref"].(string)
-				label, _ := m["label"].(string)
-				if ref == "" {
-					continue
-				}
-				b.WriteString("  - ")
-				if label != "" {
-					b.WriteString(label)
-					b.WriteString(" (")
-					b.WriteString(ref)
-					b.WriteString(")")
-				} else {
-					b.WriteString(ref)
-				}
-				if typ != "" {
-					b.WriteString(" [")
-					b.WriteString(typ)
-					b.WriteString("]")
-				}
-				b.WriteByte('\n')
-			}
-		}
-	}
-	return b.String(), true
 }

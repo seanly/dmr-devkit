@@ -20,7 +20,7 @@ import (
 	"github.com/seanly/dmr-devkit/observe"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
-	"github.com/seanly/dmr-devkit/tools/handoff"
+	"github.com/seanly/dmr-devkit/tools/compact"
 	"github.com/seanly/dmr-devkit/tools/toolsearch"
 )
 
@@ -29,7 +29,7 @@ const defaultToolResultMaxChars = toolresult.DefaultMaxResultChars
 // Config configures the Agent.
 type Config struct {
 	MaxSteps     int
-	AgentPolicy  config.AgentConfig // YAML agent section: defaults for context handoff + completion cap resolution
+	AgentPolicy  config.AgentConfig // YAML agent section: defaults for context compact + completion cap resolution
 	SystemPrompt string
 	// SystemPromptBase is the resolved agent system prompt from config only (no plugin fragments).
 	// When plugins register SystemPrompt hooks, the loop refreshes SystemPrompt from Base each LLM step.
@@ -90,7 +90,7 @@ type Agent struct {
 	precomputedPromptBases []struct{ pattern, prompt string }
 	precomputedTapeModels  []struct{ pattern, model string }
 
-	// builtinTools are the devkit-injected tools (toolSearch, handoff, etc.) that
+	// builtinTools are the devkit-injected tools (toolSearch, compact, etc.) that
 	// are always available to the agent loop and may also be exposed to the host
 	// for comma/slash command dispatch.
 	builtinTools []*tool.Tool
@@ -127,15 +127,11 @@ func (a *Agent) appendSystemPromptEntry(tapeName, content string) error {
 // agent policy. When soft_boundary is enabled, it keeps KeepBeforeAnchor raw
 // messages before the last anchor as a safety net. When quality_fallback is
 // enabled, poor compact summaries are suppressed so the model falls back to
-// task_state + recent raw messages. The configured compact strategy is copied
+// recent raw messages. The configured compact strategy is copied
 // onto the context.
 func (a *Agent) tapeContextForTape(tapeName string) *tape.TapeContext {
 	ctxCfg := a.config.AgentPolicy.Context
 	strategy := ctxCfg.Strategy
-	// Semantic collapse is summarizer-only; for live context it is identity.
-	if strategy.IsSemanticCollapse() {
-		strategy = config.CompactStrategySummary
-	}
 	if strategy.IsSummary() && ctxCfg.SnipCompact {
 		strategy = config.CompactStrategySnip
 	}
@@ -151,15 +147,10 @@ func (a *Agent) tapeContextForTape(tapeName string) *tape.TapeContext {
 }
 
 // resolveContextStrategy returns the effective compact strategy for a tape based
-// on agent policy, honoring the legacy SnipCompact flag. Semantic collapse is
-// treated as summary for live-context purposes; the summarizer applies the
-// collapse pass independently.
+// on agent policy, honoring the legacy SnipCompact flag.
 func (a *Agent) resolveContextStrategy() config.CompactStrategy {
 	ctxCfg := a.config.AgentPolicy.Context
 	strategy := ctxCfg.Strategy
-	if strategy.IsSemanticCollapse() {
-		strategy = config.CompactStrategySummary
-	}
 	if strategy.IsSummary() && ctxCfg.SnipCompact {
 		return config.CompactStrategySnip
 	}
@@ -190,9 +181,9 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 	a.precomputePromptBases()
 	a.precomputeTapeModels()
 
-	// Inject built-in toolSearch for deferred tool discovery and handoff for focused compaction.
+	// Inject built-in toolSearch for deferred tool discovery and compact for focused compaction.
 	// Copy config.Tools to avoid mutating the caller's slice.
-	builtinTools := []*tool.Tool{toolsearch.NewTool(a), handoff.NewTool(a)}
+	builtinTools := []*tool.Tool{toolsearch.NewTool(a), compact.NewTool(a)}
 	if len(a.config.Tools) > 0 {
 		builtinTools = append(builtinTools, a.config.Tools...)
 	}
@@ -202,7 +193,7 @@ func New(chat *client.ChatClient, tm *tape.TapeManager, hooks Hooks, cfg Config)
 	return a
 }
 
-// BuiltinTools returns the devkit-injected built-in tools (e.g. toolSearch, handoff).
+// BuiltinTools returns the devkit-injected built-in tools (e.g. toolSearch, compact).
 // These are always loaded and may be exposed to the host for slash/comma command dispatch.
 func (a *Agent) BuiltinTools() []*tool.Tool {
 	out := make([]*tool.Tool, len(a.builtinTools))
@@ -449,7 +440,7 @@ func (a *Agent) getChatClient(tapeName string) *client.ChatClient {
 	return a.defaultChat
 }
 
-func (a *Agent) handoffContextLimit(tapeName string) int {
+func (a *Agent) compactContextLimit(tapeName string) int {
 	m := a.GetCurrentModel(tapeName)
 	if m == nil {
 		return 0
@@ -457,15 +448,15 @@ func (a *Agent) handoffContextLimit(tapeName string) int {
 	return m.ResolveContextLimit(a.config.AgentPolicy)
 }
 
-// ContextTokenBudget returns the configured prompt-token budget used by proactive handoff
-// (i.e. the same value as handoffContextLimit, exposed for UI telemetry).
+// ContextTokenBudget returns the configured prompt-token budget used by proactive compact
+// (i.e. the same value as compactContextLimit, exposed for UI telemetry).
 func (a *Agent) ContextTokenBudget(tapeName string) int {
-	return a.handoffContextLimit(tapeName)
+	return a.compactContextLimit(tapeName)
 }
 
 // shouldCompactNow checks whether a compact is allowed at the given step.
 // It enforces a minimum gap between compacts for the same tape, but relaxes
-// that gap when estimated tokens have already crossed the configured handoff
+// that gap when estimated tokens have already crossed the configured compact
 // threshold. It resets if the step counter wraps (new conversation cycle).
 func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, limit int, threshold float64) bool {
 	ts := a.tapeStates.getOrCreate(tapeName)
@@ -499,7 +490,7 @@ func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, lim
 		return true
 	}
 
-	// Pressure override: if the context is already above the handoff threshold,
+	// Pressure override: if the context is already above the compact threshold,
 	// allow compaction after pressureOverrideGap steps.
 	if limit > 0 && estimatedTokens > 0 && gap >= pressureOverrideGap {
 		if float64(estimatedTokens) >= float64(limit)*threshold {
@@ -510,19 +501,19 @@ func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, lim
 	return false
 }
 
-// canHandoffTool checks whether the built-in handoff tool is allowed to run on
-// the given tape. It prevents the LLM from invoking handoff repeatedly in short
+// CanCompactTool checks whether the built-in compact tool is allowed to run on
+// the given tape. It prevents the LLM from invoking compact repeatedly in short
 // succession when there has been no meaningful new conversation since the last
-// anchor (handoff or compact). The check is intentionally conservative: it only
-// blocks the LLM-driven handoff tool; user-initiated slash commands and automatic
-// loop-level handoffs are not gated here.
-func (a *Agent) CanHandoffTool(tapeName string) bool {
+// anchor (compact). The check is intentionally conservative: it only
+// blocks the LLM-driven compact tool; user-initiated slash commands and automatic
+// loop-level compacts are not gated here.
+func (a *Agent) CanCompactTool(tapeName string) bool {
 	entries, err := a.tape.Store.FetchAll(tapeName, nil)
 	if err != nil {
 		return true
 	}
 
-	// Find the most recent anchor (handoff or compact).
+	// Find the most recent anchor (compact).
 	lastAnchorIdx := -1
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].Kind == "anchor" {
@@ -531,7 +522,7 @@ func (a *Agent) CanHandoffTool(tapeName string) bool {
 		}
 	}
 
-	// No prior anchor — allow the first handoff.
+	// No prior anchor — allow the first compact.
 	if lastAnchorIdx < 0 {
 		return true
 	}
@@ -558,7 +549,7 @@ func (a *Agent) recordCompactStep(tapeName string, step int) {
 	a.persistTapeState(tapeName)
 }
 
-func (a *Agent) handoffThreshold(tapeName string) float64 {
+func (a *Agent) compactThreshold(tapeName string) float64 {
 	m := a.GetCurrentModel(tapeName)
 	if m == nil {
 		return 0.8
@@ -580,7 +571,7 @@ func (a *Agent) completionMaxTokensForTape(tapeName string) int {
 // Priority:
 //  1. model.ToolResultMaxChars (0=unset, -1=disable externalize)
 //  2. agent.AgentPolicy.ToolResultMaxChars (0=unset, -1=disable)
-//  3. Auto-calculated based on max_token and handoff_threshold
+//  3. Auto-calculated based on max_token and compact_threshold
 //  4. defaultToolResultMaxChars (50_000)
 func (a *Agent) toolResultMaxCharsForTape(tapeName string) int {
 	m := a.GetCurrentModel(tapeName)
@@ -593,12 +584,12 @@ func (a *Agent) toolResultMaxCharsForTape(tapeName string) int {
 		return a.config.AgentPolicy.ToolResultMaxChars
 	}
 
-	// 2. Auto-calculate based on max_token and handoff_threshold
+	// 2. Auto-calculate based on max_token and compact_threshold
 	if m != nil && m.MaxToken > 0 {
 		threshold := m.ResolveHandoffThreshold(a.config.AgentPolicy)
 
 		// Calculation logic:
-		// - When handoff triggers, history occupies max_token * threshold
+		// - When compact triggers, history occupies max_token * threshold
 		// - Space left for tool result = max_token * (1 - threshold)
 		// - Reserve 20% safety margin
 		// - 1 token ≈ 4 chars (may vary by language)
@@ -616,7 +607,7 @@ func (a *Agent) toolResultMaxCharsForTape(tapeName string) int {
 
 // shouldAutoHandoff checks if prompt_tokens exceed the configured threshold for this tape's model.
 func (a *Agent) shouldAutoHandoff(tapeName string, latestUsage map[string]any) bool {
-	limit := a.handoffContextLimit(tapeName)
+	limit := a.compactContextLimit(tapeName)
 	if limit <= 0 || latestUsage == nil {
 		return false
 	}
@@ -625,19 +616,19 @@ func (a *Agent) shouldAutoHandoff(tapeName string, latestUsage map[string]any) b
 		return false
 	}
 	a.contextBudgetForTape(tapeName).UpdateReported(pt)
-	th := a.handoffThreshold(tapeName)
+	th := a.compactThreshold(tapeName)
 	return float64(pt) >= float64(limit)*th
 }
 
 // shouldAutoHandoffByEstimate checks if estimated tokens exceed the threshold.
 // This is used for preemptive compact before calling the API.
 func (a *Agent) shouldAutoHandoffByEstimate(tapeName string, estimatedTokens int) bool {
-	limit := a.handoffContextLimit(tapeName)
+	limit := a.compactContextLimit(tapeName)
 	if limit <= 0 || estimatedTokens <= 0 {
 		return false
 	}
 	a.contextBudgetForTape(tapeName).UpdateEstimated(estimatedTokens)
-	th := a.handoffThreshold(tapeName)
+	th := a.compactThreshold(tapeName)
 	return float64(estimatedTokens) >= float64(limit)*th
 }
 
@@ -802,7 +793,7 @@ func (a *Agent) Resume(ctx context.Context, tapeName string) (*Result, error) {
 func (a *Agent) Handoff(tapeName, name string, state map[string]any) {
 	a.ClearDiscoveredTools(tapeName)
 	if err := a.hooks.OnContextReset(context.Background(), tapeName, "handoff"); err != nil {
-		slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "handoff", "error", err)
+		slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
 	}
 	if _, err := a.tape.Handoff(tapeName, name, state); err != nil {
 		slog.Warn("tape handoff failed", "name", name, "error", err)

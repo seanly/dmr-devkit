@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/seanly/dmr-devkit/core"
-	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
 
@@ -143,27 +142,32 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 		// Record a failure handoff packet on the child tape so audit/debug tools
 		// can see the error state. Preserve existing error semantics for callers.
 		childEntries, _ := a.tape.Store.FetchAll(childTape, nil)
-		taskState := handoff.LatestState(childEntries)
 		toolCalls := countToolCallsInTape(childEntries)
-		packet := &handoff.Packet{
-			Summary:   fmt.Sprintf("subagent failed: %v", err),
-			Text:      err.Error(),
-			TaskState: taskState,
-			Metrics:   &handoff.Metrics{ToolCalls: toolCalls},
+		packet := map[string]any{
+			"schema_version": 1,
+			"summary":        fmt.Sprintf("subagent failed: %v", err),
+			"text":           err.Error(),
+			"metrics":        map[string]any{"tool_calls": toolCalls},
 		}
-		_ = a.tape.AppendEntry(childTape, tape.NewHandoffPacketEntry(packet.ToPayload()))
+		_ = a.tape.AppendEntry(childTape, tape.NewHandoffPacketEntry(packet))
 		return &SubagentResult{Text: err.Error(), Packet: packet}, err
 	}
 	if res == nil {
 		return &SubagentResult{}, nil
 	}
 	childEntries, _ := a.tape.Store.FetchAll(childTape, nil)
-	taskState := handoff.LatestState(childEntries)
 	toolCalls := countToolCallsInTape(childEntries)
-	packet := handoff.NewPacketFromOutput(res.Output, taskState, res.Steps, toolCalls)
-	if packet != nil {
-		_ = a.tape.AppendEntry(childTape, tape.NewHandoffPacketEntry(packet.ToPayload()))
+	summary := res.Output
+	if len([]rune(summary)) > 500 {
+		summary = string([]rune(summary)[:500])
 	}
+	packet := map[string]any{
+		"schema_version": 1,
+		"summary":        summary,
+		"text":           res.Output,
+		"metrics":        map[string]any{"steps": res.Steps, "tool_calls": toolCalls},
+	}
+	_ = a.tape.AppendEntry(childTape, tape.NewHandoffPacketEntry(packet))
 	return &SubagentResult{Text: res.Output, Packet: packet}, nil
 }
 

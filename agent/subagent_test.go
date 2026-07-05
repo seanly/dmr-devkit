@@ -197,8 +197,9 @@ func TestRunSubagent_ErrorAppendsFailureHandoffPacket(t *testing.T) {
 	if res == nil || res.Packet == nil {
 		t.Fatal("expected failure packet in result")
 	}
-	if !strings.Contains(res.Packet.Summary, "subagent failed") {
-		t.Fatalf("unexpected packet summary: %q", res.Packet.Summary)
+	summary, _ := res.Packet["summary"].(string)
+	if !strings.Contains(summary, "subagent failed") {
+		t.Fatalf("unexpected packet summary: %q", summary)
 	}
 
 	childTape := findChildTape(a.tape.Store, parentTape)

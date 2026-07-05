@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sort"
 
 	"github.com/seanly/dmr-devkit/tool"
 )
@@ -57,6 +58,15 @@ func (a *Agent) collectToolsWithDiscovery(ctx context.Context, tapeName string) 
 			}
 		}
 	}
+
+	// Sort tools by name for deterministic ordering, ensuring LLM cache key stability.
+	// Without this, map iteration order can change the tools list across turns.
+	sort.Slice(tools, func(i, j int) bool {
+		if tools[i] == nil || tools[j] == nil {
+			return tools[i] == nil && tools[j] != nil
+		}
+		return tools[i].Spec.Name < tools[j].Spec.Name
+	})
 
 	return tools
 }

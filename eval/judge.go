@@ -162,7 +162,7 @@ func FormatTapeSummary(entries []tape.TapeEntry) string {
 			}
 		case "tool_result":
 			fmt.Fprintf(&b, "tool_result: %s\n", truncateSummary(fmt.Sprint(e.Payload["results"]), 1000))
-		case "task_state", "handoff_packet", "event", "anchor", "compact_summary":
+		case "handoff_packet", "event", "anchor", "compact_summary":
 			fmt.Fprintf(&b, "%s\n", truncateSummary(fmt.Sprint(e.Payload), 1500))
 		default:
 			fmt.Fprintf(&b, "%s\n", truncateSummary(fmt.Sprint(e.Payload), 500))

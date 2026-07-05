@@ -107,7 +107,7 @@ func TestSemanticCollapseForLiveContextIsIdentity(t *testing.T) {
 		{"role": "assistant", "tool_calls": []any{map[string]any{"id": "1"}}, "content": ""},
 		{"role": "tool", "tool_call_id": "1", "content": "result"},
 	}
-	got := applyCompactStrategy(msgs, config.CompactStrategySemanticCollapse)
+	got := applyCompactStrategy(msgs, config.CompactStrategySummary)
 	if len(got) != 2 {
 		t.Fatalf("expected live context to keep 2 messages, got %d", len(got))
 	}

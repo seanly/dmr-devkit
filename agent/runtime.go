@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-
-	"github.com/seanly/dmr-devkit/handoff"
 )
 
 // InterceptResult is returned by InterceptInput hook to short-circuit the agent loop.
@@ -39,10 +37,10 @@ type RunResult struct {
 	ClearScreen      bool   // true: caller should clear the screen
 }
 
-// SubagentResult is the outcome of a delegated sub-agent run (v2 handoff packet).
+// SubagentResult is the outcome of a delegated sub-agent run.
 type SubagentResult struct {
 	Text   string
-	Packet *handoff.Packet
+	Packet map[string]any
 }
 
 // RuntimeAgent is the interface that plugins use to interact with the agent.
@@ -53,7 +51,6 @@ type RuntimeAgent interface {
 	GetCurrentModelName(tapeName string) (name, model string)
 	SwitchModel(tapeName, modelName string) error
 	CompactTape(ctx context.Context, tapeName string) (summary string, err error)
-	CompactTapeWithFocus(ctx context.Context, tapeName, focus string) (summary string, err error)
 	RestartProcess() error
 
 	// Agent execution (used by cli plugin)

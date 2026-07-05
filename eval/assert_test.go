@@ -5,33 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/tape"
 )
-
-func TestEvaluateTapeTaskState(t *testing.T) {
-	r := &Rubric{
-		Name:      "test",
-		PassScore: 0.8,
-		Dimensions: []Dimension{{
-			ID:     "state",
-			Weight: 1,
-			Assertions: []Assertion{{
-				Type: "task_state_field_present", Field: "goal",
-			}},
-		}},
-	}
-	entries := []tape.TapeEntry{
-		tape.NewTaskStateEntry(handoff.NewState("fix bug", "heuristic").ToPayload()),
-	}
-	card, err := EvaluateTape(entries, r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !card.Passed {
-		t.Fatalf("expected pass: %+v", card)
-	}
-}
 
 func TestEvaluateTapeLoopEvent(t *testing.T) {
 	r := &Rubric{
@@ -51,29 +26,6 @@ func TestEvaluateTapeLoopEvent(t *testing.T) {
 		}),
 	}
 	card, err := EvaluateTape(entries, r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !card.Passed {
-		t.Fatalf("expected pass: %+v", card)
-	}
-}
-
-func TestEvaluateTapeTaskStateConstraint(t *testing.T) {
-	st := handoff.NewState("Book Paris tickets", "heuristic")
-	st.Constraints = map[string]string{"seat": "aisle"}
-	r := &Rubric{
-		Name:      "constraint",
-		PassScore: 1,
-		Dimensions: []Dimension{{
-			ID:     "constraint",
-			Weight: 1,
-			Assertions: []Assertion{{
-				Type: "task_state_constraint", Key: "seat", Value: "aisle",
-			}},
-		}},
-	}
-	card, err := EvaluateTape([]tape.TapeEntry{tape.NewTaskStateEntry(st.ToPayload())}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,30 +315,6 @@ func TestToolResultSuccess(t *testing.T) {
 		tape.NewToolResultEntry([]any{"ok"}),
 	}
 	card, err := EvaluateTape(entries, r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !card.Passed {
-		t.Fatalf("expected pass: %+v", card)
-	}
-}
-
-func TestStateConstraintPriority(t *testing.T) {
-	st := handoff.NewState("Book tickets", "heuristic")
-	st.Constraints = map[string]string{"seat": "aisle", "budget": "low"}
-	r := &Rubric{
-		Name:      "priority",
-		PassScore: 1,
-		Dimensions: []Dimension{{
-			ID:     "priority",
-			Weight: 1,
-			Assertions: []Assertion{{
-				Type:  "state_constraint_priority",
-				Names: []string{"seat", "budget"},
-			}},
-		}},
-	}
-	card, err := EvaluateTape([]tape.TapeEntry{tape.NewTaskStateEntry(st.ToPayload())}, r)
 	if err != nil {
 		t.Fatal(err)
 	}

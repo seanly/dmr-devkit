@@ -18,9 +18,6 @@ func applyCompactStrategy(messages []map[string]any, strategy config.CompactStra
 		return snipMessages(messages)
 	case strategy.IsCollapse():
 		return collapseMessages(messages)
-	case strategy.IsSemanticCollapse():
-		// Semantic collapse is summarizer-only; for live context it is identity.
-		return messages
 	default:
 		// Summary / unknown / zero value: identity.
 		return messages

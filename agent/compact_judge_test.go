@@ -5,20 +5,18 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/seanly/dmr-devkit/handoff"
 	"github.com/seanly/dmr-devkit/provider"
 )
 
 func TestValidateCompactSummary(t *testing.T) {
-	st := &handoff.State{Goal: "refactor handoff pipeline"}
-	if !validateCompactSummary(st, "We refactored the handoff pipeline successfully") {
-		t.Fatal("expected pass when summary contains goal token")
+	if !validateCompactSummary("We refactored the handoff pipeline successfully") {
+		t.Fatal("expected pass for non-empty multi-word summary")
 	}
-	if validateCompactSummary(st, "unrelated summary without keywords") {
-		t.Fatal("expected fail for unrelated summary")
+	if validateCompactSummary("ok") {
+		t.Fatal("expected fail for short summary")
 	}
-	if !validateCompactSummary(nil, "any summary") {
-		t.Fatal("expected pass when no state but summary present")
+	if !validateCompactSummary("any summary with enough words") {
+		t.Fatal("expected pass for sufficient length summary")
 	}
 }
 
@@ -27,8 +25,7 @@ func TestValidateCompactSummaryWithLLM_Pass(t *testing.T) {
 		&provider.ChatResponse{Text: `{"pass": true, "reason": "summary captures the goal"}`, Usage: &provider.Usage{TotalTokens: 10}},
 	}}
 	a := newSummarizerTestAgent(fake)
-	st := &handoff.State{Goal: "refactor handoff pipeline"}
-	pass, reason, err := validateCompactSummaryWithLLM(context.Background(), a.defaultChat, st, "We refactored the handoff pipeline", "tape1")
+	pass, reason, err := validateCompactSummaryWithLLM(context.Background(), a.defaultChat, "We refactored the handoff pipeline", "tape1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,8 +42,7 @@ func TestValidateCompactSummaryWithLLM_Fail(t *testing.T) {
 		&provider.ChatResponse{Text: `{"pass": false, "reason": "goal is missing"}`, Usage: &provider.Usage{TotalTokens: 10}},
 	}}
 	a := newSummarizerTestAgent(fake)
-	st := &handoff.State{Goal: "refactor handoff pipeline"}
-	pass, reason, err := validateCompactSummaryWithLLM(context.Background(), a.defaultChat, st, "We had lunch", "tape1")
+	pass, reason, err := validateCompactSummaryWithLLM(context.Background(), a.defaultChat, "We had lunch", "tape1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,24 +59,21 @@ func TestValidateCompactSummaryWithLLM_FallbackOnError(t *testing.T) {
 		fmt.Errorf("network error"),
 	}}
 	a := newSummarizerTestAgent(fake)
-	st := &handoff.State{Goal: "refactor handoff pipeline"}
-	_, _, err := validateCompactSummaryWithLLM(context.Background(), a.defaultChat, st, "We refactored the handoff pipeline", "tape1")
+	_, _, err := validateCompactSummaryWithLLM(context.Background(), a.defaultChat, "We refactored the handoff pipeline", "tape1")
 	if err == nil {
 		t.Fatal("expected error to trigger fallback")
 	}
 }
 
-func TestValidateCompactSummaryWithLLM_NoState(t *testing.T) {
-	pass, reason, err := validateCompactSummaryWithLLM(context.Background(), nil, nil, "any summary", "tape1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestValidateCompactSummaryWithLLM_NoClient(t *testing.T) {
+	pass, reason, err := validateCompactSummaryWithLLM(context.Background(), nil, "any summary", "tape1")
+	if err == nil {
+		t.Fatal("expected error when client is nil")
 	}
-	if !pass {
-		t.Fatal("expected pass when state is nil and summary is non-empty")
+	if pass {
+		t.Fatal("expected fail")
 	}
-	if reason != "" {
-		t.Fatalf("expected empty reason, got %q", reason)
-	}
+	_ = reason
 }
 
 func TestParseSummaryJudgeResponse(t *testing.T) {
