@@ -24,6 +24,7 @@ const maxClientCache = 50
 // LLMCore is the retry + fallback engine.
 type LLMCore struct {
 	model           string
+	name            string
 	fallbacks       []string
 	maxRetries      int
 	apiKey          string
@@ -49,6 +50,7 @@ type LLMCore struct {
 // LLMCoreConfig configures the LLMCore engine.
 type LLMCoreConfig struct {
 	Model           string
+	Name            string // human-friendly alias for the primary model, used in logs
 	FallbackModels  []string
 	MaxRetries      int // default 3
 	APIKey          string
@@ -73,6 +75,7 @@ func NewLLMCore(cfg LLMCoreConfig) *LLMCore {
 	}
 	return &LLMCore{
 		model:                     cfg.Model,
+		name:                      cfg.Name,
 		fallbacks:                 cfg.FallbackModels,
 		maxRetries:                cfg.MaxRetries,
 		apiKey:                    cfg.APIKey,
@@ -110,7 +113,7 @@ func (c *LLMCore) RunChat(ctx context.Context, opts RunChatOpts) (*provider.Chat
 		req := c.buildChatRequest(model, opts)
 
 		if c.verbose >= 1 {
-			slog.Info("LLM request", "model", model, "messages", len(req.Messages), "tools", len(req.Tools))
+			slog.Info("LLM request", "model", c.modelLabel(model), "messages", len(req.Messages), "tools", len(req.Tools))
 		}
 		if c.verbose >= 3 {
 			if data, err := json.MarshalIndent(req, "", "  "); err == nil {
@@ -513,6 +516,15 @@ func mustMarshal(v any) []byte {
 // Model returns the primary model name.
 func (c *LLMCore) Model() string {
 	return c.model
+}
+
+// modelLabel returns the human-friendly alias for the primary model when set,
+// falling back to the raw model id. Fallback models are always logged by id.
+func (c *LLMCore) modelLabel(model string) string {
+	if c.name != "" && model == c.model {
+		return c.name
+	}
+	return model
 }
 
 // MaxRetries returns the max retry count.

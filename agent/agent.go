@@ -399,6 +399,7 @@ func (a *Agent) buildChatClient(model *config.ModelConfig) *client.ChatClient {
 	httpHdr, httpClient := model.HTTPTimeouts()
 	llmCore := core.NewLLMCore(core.LLMCoreConfig{
 		Model:                     model.Model,
+		Name:                      model.Name,
 		APIKey:                    model.APIKey,
 		APIBase:                   model.APIBase,
 		TokenURL:                  model.TokenURL,
