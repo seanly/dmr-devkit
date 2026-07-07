@@ -473,26 +473,55 @@ func (s *SQLiteTapeStore) fetchWithFTS5(tape string, opts *FetchOpts) ([]TapeEnt
 
 	matchQuery := buildFTS5MatchQuery(opts.TextQuery)
 
-	// Query: Find entries in specific tape that match FTS content
+	// All filters are pushed into SQL so that pagination by (id > after_id) is
+	// exact: every filtered-out row is excluded before the LIMIT, so a full page
+	// never terminates the cursor early and a partial page truly means no more
+	// matches. Results are ordered by id (not FTS5 rank) because a keyset cursor
+	// only works when the result is ordered by the cursor column; BM25 ranking
+	// would make the id cursor incoherent across pages. FTS5 still provides the
+	// fast indexed full-text filter; only relevance ordering is sacrificed,
+	// matching the LIKE path's chronological ordering.
+	//
+	// The text filter is NOT re-applied in Go (unlike applyPostFilters on the
+	// anchor paths): FTS5 MATCH already filtered, and the substring re-check
+	// would drop multi-token queries like "登录 超时" because the joined tokens
+	// (with a space) are not a contiguous substring of any single field.
+	var where []string
+	var args []any
+	where = append(where, "e.tape = ?", "entries_fts MATCH ?")
+	args = append(args, tape, matchQuery)
+
+	if opts.AfterID > 0 {
+		where = append(where, "e.id > ?")
+		args = append(args, opts.AfterID)
+	}
+	if opts.StartDate != "" {
+		where = append(where, "e.date >= ?")
+		args = append(args, opts.StartDate)
+	}
+	if opts.EndDate != "" {
+		where = append(where, "e.date <= ?")
+		args = append(args, normEndDate(opts.EndDate))
+	}
+	if len(opts.Kinds) > 0 {
+		placeholders := make([]string, len(opts.Kinds))
+		for i, k := range opts.Kinds {
+			placeholders[i] = "?"
+			args = append(args, k)
+		}
+		where = append(where, "e.kind IN ("+strings.Join(placeholders, ",")+")")
+	}
+
 	sql := `SELECT e.id, e.kind, e.payload, e.meta, e.date
 		FROM entries e
 		JOIN entries_fts f ON e.id = f.rowid
-		WHERE e.tape = ? AND entries_fts MATCH ?`
-	args := []any{tape, matchQuery}
-
-	sql += " ORDER BY rank"
-
+		WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY e.id`
 	if opts.Limit > 0 {
-		sql += fmt.Sprintf(" LIMIT %d", opts.Limit+100)
+		sql += fmt.Sprintf(" LIMIT %d", opts.Limit)
 	}
 
-	entries, err := s.queryEntries(sql, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply post-filters (date, kinds) - though most should be handled by SQL now
-	return applyPostFilters(entries, opts), nil
+	return s.queryEntries(sql, args...)
 }
 
 // buildFTS5MatchQuery converts a user query into a safe FTS5 MATCH expression.

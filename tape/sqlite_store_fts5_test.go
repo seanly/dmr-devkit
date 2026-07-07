@@ -486,3 +486,100 @@ func TestSQLiteFTS5Migration_ContextCancel(t *testing.T) {
 
 	store.Close()
 }
+
+// TestSQLiteFTS5MultiTokenSearch verifies that a multi-token FTS5 query
+// (space-separated terms, AND semantics) returns documents containing all
+// terms. Previously applyPostFilters re-applied the raw query as a contiguous
+// substring check, which dropped every match for multi-token queries like
+// "登录 超时" (no document contains that exact spaced string) and returned 0.
+func TestSQLiteFTS5MultiTokenSearch(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewSQLiteTapeStore(dbPath, SQLiteStoreConfig{
+		EnableFTS5: config.FTS5True,
+	})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	entries := []TapeEntry{
+		{Kind: "message", Payload: map[string]any{"content": "登录页一直超时了怎么办"}, Date: time.Now().Format(time.RFC3339)},
+		{Kind: "message", Payload: map[string]any{"content": "登录页面正常显示"}, Date: time.Now().Format(time.RFC3339)},
+		{Kind: "message", Payload: map[string]any{"content": "网络超时了需要重试"}, Date: time.Now().Format(time.RFC3339)},
+	}
+	for _, e := range entries {
+		if err := store.Append("testtape", e); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	// "登录页 超时了" => documents containing BOTH terms (3-char terms so the
+	// trigram tokenizer can match them). Only the first entry contains both;
+	// the others contain only one. Expect exactly 1. Previously the substring
+	// re-check dropped all matches (the spaced string is no field's substring).
+	got, err := store.FetchAllSearch("testtape", &FetchOpts{TextQuery: "登录页 超时了", Limit: 10}, "fts5")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("multi-token AND: expected 1 result (doc with both terms), got %d", len(got))
+		for _, e := range got {
+			t.Logf("  matched: %v", e.Payload["content"])
+		}
+	}
+}
+
+// TestSQLiteFTS5DateFilter verifies that start_date/end_date are honored on the
+// FTS5 path. Previously fetchWithFTS5 pushed neither date nor kinds into SQL and
+// applyPostFilters did not handle dates, so time filters were silently ignored
+// whenever a text query was present.
+func TestSQLiteFTS5DateFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewSQLiteTapeStore(dbPath, SQLiteStoreConfig{
+		EnableFTS5: config.FTS5True,
+	})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	dated := []struct {
+		content string
+		date    string
+	}{
+		{"error one", "2026-04-03T10:00:00Z"},
+		{"error two", "2026-04-03T15:00:00Z"},
+		{"error three", "2026-04-04T10:00:00Z"},
+	}
+	for _, d := range dated {
+		if err := store.Append("testtape", TapeEntry{
+			Kind:    "message",
+			Payload: map[string]any{"content": d.content},
+			Date:    d.date,
+		}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	// All three match "error"; restricting to 2026-04-03 must keep only the
+	// two entries from that day.
+	got, err := store.FetchAllSearch("testtape", &FetchOpts{
+		TextQuery:  "error",
+		StartDate:  "2026-04-03",
+		EndDate:    "2026-04-03",
+		Limit:      10,
+	}, "fts5")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("date filter: expected 2 results on 2026-04-03, got %d", len(got))
+		for _, e := range got {
+			t.Logf("  matched: date=%s content=%v", e.Date, e.Payload["content"])
+		}
+	}
+}
