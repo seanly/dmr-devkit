@@ -32,6 +32,31 @@ type TapeContext struct {
 	SkipPoorSummaries bool
 	// Strategy selects how tape entries are transformed into LLM messages.
 	Strategy config.CompactStrategy
+	// GraduatedTrim enables more aggressive truncation of older tool_result
+	// content while keeping the most recent ones intact (L1 graduated trimming).
+	GraduatedTrim bool
+	// RecentToolResults is the count of most-recent tool messages kept intact.
+	// 0 = 3.
+	RecentToolResults int
+	// OldToolResultRatio is the fraction of ToolResultMaxChars applied to older
+	// tool messages (0..1). 0 = 0.25.
+	OldToolResultRatio float64
+	// ToolResultMaxChars is the per-result truncation budget (in runes) used as
+	// the baseline for graduated trimming. 0 = graduated trimming disabled.
+	ToolResultMaxChars int
+	// ContextMicrocompact clears the content of older tool_result messages
+	// (kept as structural placeholders) to reduce cold-prefix tokens (L3).
+	ContextMicrocompact bool
+	// SnipDropUnits drops up to this many safe "units" from the front of the
+	// built message list to shed tokens without an LLM compact (L2 history
+	// snip). A unit is a standalone user/assistant-text message, or an
+	// assistant-with-tool_calls message plus its immediately following tool
+	// messages. Protected messages (system, compact_summary, and the last
+	// SnipKeepRecentTurns turns) are never dropped.
+	SnipDropUnits int
+	// SnipKeepRecentTurns is the number of most-recent turns protected from
+	// snipping. 0 = 2.
+	SnipKeepRecentTurns int
 	// builder is attached by TapeManager.ReadMessages so that standalone
 	// TapeContext.BuildMessages can delegate to the builder pipeline.
 	builder *ContextBuilder
@@ -80,7 +105,9 @@ func (tc *TapeContext) BuildMessages(entries []TapeEntry) []map[string]any {
 	if tc.builder != nil {
 		return tc.builder.BuildMessages(entries, tc)
 	}
-	return applyCompactStrategy(buildMessages(entries, tc), tc.Strategy)
+	messages := buildMessages(entries, tc)
+	messages = applyProgressiveTrim(messages, tc)
+	return applyCompactStrategy(messages, tc.Strategy)
 }
 
 // SetBuilder attaches a ContextBuilder to this context so that BuildMessages can

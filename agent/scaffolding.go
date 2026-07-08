@@ -34,10 +34,3 @@ func (a *Agent) preemptiveCompactEnabled() bool {
 func (a *Agent) llmCompactEnabled() bool {
 	return !a.scaffoldingMinimal()
 }
-
-func (a *Agent) summaryJudgeEnabled() bool {
-	if a.scaffoldingMinimal() || a.scaffoldingLegacy() {
-		return false
-	}
-	return true
-}

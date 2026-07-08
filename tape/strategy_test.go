@@ -1,7 +1,6 @@
 package tape
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/seanly/dmr-devkit/config"
@@ -113,61 +112,3 @@ func TestSemanticCollapseForLiveContextIsIdentity(t *testing.T) {
 	}
 }
 
-func TestSemanticCollapseMessages_GroupsToolCalls(t *testing.T) {
-	msgs := []map[string]any{
-		{"role": "assistant", "content": "", "tool_calls": []map[string]any{
-			{"id": "c1", "type": "function", "function": map[string]any{"name": "read_file", "arguments": `{"file_path":"a.md"}`}},
-			{"id": "c2", "type": "function", "function": map[string]any{"name": "read_file", "arguments": `{"file_path":"b.md"}`}},
-		}},
-		{"role": "tool", "tool_call_id": "c1", "content": "content-a"},
-		{"role": "tool", "tool_call_id": "c2", "content": "content-b"},
-		{"role": "user", "content": "thanks"},
-	}
-	got := SemanticCollapseMessages(msgs)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(got))
-	}
-	content, _ := got[0]["content"].(string)
-	if !strings.Contains(content, "[Tool Interaction]") {
-		t.Errorf("expected [Tool Interaction], got %q", content)
-	}
-	if !strings.Contains(content, "content-a") || !strings.Contains(content, "content-b") {
-		t.Errorf("expected both results, got %q", content)
-	}
-	if got[0]["role"] != "user" {
-		t.Errorf("expected role=user, got %v", got[0]["role"])
-	}
-	if got[1]["content"] != "thanks" {
-		t.Errorf("expected user message preserved, got %v", got[1])
-	}
-}
-
-func TestSemanticCollapseMessages_PositionalFallback(t *testing.T) {
-	msgs := []map[string]any{
-		{"role": "assistant", "content": "", "tool_calls": []map[string]any{
-			{"id": "c1", "type": "function", "function": map[string]any{"name": "read_file", "arguments": `{}`}},
-		}},
-		{"role": "tool", "content": "no id"},
-	}
-	got := SemanticCollapseMessages(msgs)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 collapsed message, got %d", len(got))
-	}
-	content, _ := got[0]["content"].(string)
-	if !strings.Contains(content, "no id") {
-		t.Errorf("expected positional fallback result, got %q", content)
-	}
-}
-
-func TestSemanticCollapseMessages_UnmatchedToolResult(t *testing.T) {
-	msgs := []map[string]any{
-		{"role": "tool", "tool_call_id": "orphan", "content": "standalone"},
-	}
-	got := SemanticCollapseMessages(msgs)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(got))
-	}
-	if got[0]["role"] != "tool" {
-		t.Errorf("expected unmatched tool message left unchanged, got %v", got[0])
-	}
-}

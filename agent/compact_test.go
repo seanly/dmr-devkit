@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/seanly/dmr-devkit/client"
@@ -337,10 +338,10 @@ func TestCompact_HeuristicQuality(t *testing.T) {
 		},
 	})
 
-	_ = tm.AppendEntry("llm-judge-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
-	_ = tm.AppendEntry("llm-judge-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}))
+	_ = tm.AppendEntry("heuristic-quality-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+	_ = tm.AppendEntry("heuristic-quality-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "hi"}))
 
-	if _, err := a.CompactTape(context.Background(), "llm-judge-tape"); err != nil {
+	if _, err := a.CompactTape(context.Background(), "heuristic-quality-tape"); err != nil {
 		t.Fatalf("CompactTape failed: %v", err)
 	}
 
@@ -349,7 +350,7 @@ func TestCompact_HeuristicQuality(t *testing.T) {
 		t.Fatalf("expected 1 LLM call (summarizer only), got %d", len(fake.calls))
 	}
 
-	entries, _ := store.FetchAll("llm-judge-tape", nil)
+	entries, _ := store.FetchAll("heuristic-quality-tape", nil)
 	var found bool
 	for _, e := range entries {
 		if e.Kind != "event" {
@@ -368,5 +369,67 @@ func TestCompact_HeuristicQuality(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected loop:compact event")
+	}
+}
+
+func TestCompact_SessionMemorySkipsLLMCall(t *testing.T) {
+	// The fake client errors if called; if session memory produces a usable
+	// summary, the LLM path must never be reached.
+	fake := &summarizerFakeClient{completionQueue: []any{
+		fmt.Errorf("LLM should not be called when session memory is sufficient"),
+	}}
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	llmCore := core.NewLLMCore(core.LLMCoreConfig{Model: "test-model", MaxRetries: 0})
+	llmCore.SetClientForModel("test-model", fake)
+	chat := client.NewChatClient(llmCore, tool.NewToolExecutor(), tm)
+
+	a := New(chat, tm, nil, Config{
+		AgentPolicy: config.AgentConfig{
+			MaxToken:         100000,
+			HandoffThreshold: 0.8,
+			Scaffolding:      config.ScaffoldingConfig{Profile: "standard"},
+			Handoff:          config.HandoffConfig{CompactAfterState: true},
+			Context: config.ContextConfig{
+				SessionMemory:        true,
+				SessionMemoryFallback: false, // do not fall back to LLM
+			},
+		},
+		Models: []config.ModelConfig{
+			{Name: "test-model", Model: "test-model", Default: true, MaxToken: 100000, HandoffThreshold: 0.8},
+		},
+	})
+
+	// Seed the tape with a couple of messages so tape.Compact has content to anchor.
+	_ = tm.AppendEntry("sm-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "refactor the compact pipeline"}))
+	_ = tm.AppendEntry("sm-tape", tape.NewMessageEntry(map[string]any{"role": "assistant", "content": "on it"}))
+
+	// Populate session memory with enough rich content.
+	mem := a.sessionMemoryForTape("sm-tape")
+	mem.AppendSegment(memorySegment{Step: 1, Type: segUserIntent, Content: "Refactor the compact pipeline to use a coordinator"})
+	mem.AppendSegment(memorySegment{Step: 2, Type: segFileChange, Content: "edit_file: agent/loop.go"})
+	mem.AppendSegment(memorySegment{Step: 3, Type: segToolResult, Content: "read_file: agent/compact.go returned 322 lines"})
+	mem.AppendSegment(memorySegment{Step: 4, Type: segError, Content: "build failed: undefined applyProgressiveTrim"})
+	mem.AppendSegment(memorySegment{Step: 5, Type: segDecision, Content: "Decided to route all triggers through the coordinator"})
+
+	if _, err := a.CompactTape(context.Background(), "sm-tape"); err != nil {
+		t.Fatalf("CompactTape failed: %v", err)
+	}
+
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected zero LLM calls, got %d", len(fake.calls))
+	}
+
+	entries, _ := store.FetchAll("sm-tape", nil)
+	var summary string
+	for _, e := range entries {
+		if e.Kind == "compact_summary" {
+			if c, ok := e.Payload["content"].(string); ok {
+				summary = c
+			}
+		}
+	}
+	if !strings.Contains(summary, "coordinator") {
+		t.Errorf("session-memory summary should mention the coordinator, got:\n%s", summary)
 	}
 }

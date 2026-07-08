@@ -143,6 +143,27 @@ func (a *Agent) tapeContextForTape(tapeName string) *tape.TapeContext {
 	}
 	ctx.SkipPoorSummaries = ctxCfg.QualityFallback
 	ctx.Strategy = strategy
+	// Progressive context management (L1 graduated trim, L3 microcompact).
+	ctx.GraduatedTrim = ctxCfg.GraduatedTrim
+	ctx.RecentToolResults = ctxCfg.RecentToolResults
+	ctx.OldToolResultRatio = ctxCfg.OldToolResultRatio
+	ctx.ToolResultMaxChars = a.toolResultMaxCharsForTape(tapeName)
+	ctx.ContextMicrocompact = ctxCfg.ContextMicrocompact
+
+	// L7 reactive recovery: honor a pending aggressive snip request from the
+	// overflow path so the next LLM call retries with trimmed context before
+	// we resort to a full compact.
+	if ts := a.tapeStates.get(tapeName); ts != nil {
+		ts.mu.Lock()
+		if ts.reactiveSnipPending {
+			ctx.SnipDropUnits = 8
+			ctx.SnipKeepRecentTurns = 1
+			ctx.ContextMicrocompact = true
+			ctx.GraduatedTrim = true
+			ts.reactiveSnipPending = false
+		}
+		ts.mu.Unlock()
+	}
 	return ctx
 }
 
@@ -455,51 +476,24 @@ func (a *Agent) ContextTokenBudget(tapeName string) int {
 	return a.compactContextLimit(tapeName)
 }
 
-// shouldCompactNow checks whether a compact is allowed at the given step.
-// It enforces a minimum gap between compacts for the same tape, but relaxes
-// that gap when estimated tokens have already crossed the configured compact
-// threshold. It resets if the step counter wraps (new conversation cycle).
+// shouldCompactNow checks whether a compact is allowed at the given step. It is
+// a backward-compatible wrapper around the unified CompactCoordinator for
+// callers that do not classify a trigger (treated as preemptive).
 func (a *Agent) shouldCompactNow(tapeName string, step, estimatedTokens int, limit int, threshold float64) bool {
+	return a.shouldCompact(tapeName, step, estimatedTokens, limit, threshold, triggerPreemptive)
+}
+
+// shouldCompact is the unified compact gate. All compact triggers route here so
+// the coordinator can enforce cooldown, per-cycle caps, and pressure overrides
+// consistently.
+func (a *Agent) shouldCompact(tapeName string, step, estimatedTokens int, limit int, threshold float64, trigger compactTrigger) bool {
 	ts := a.tapeStates.getOrCreate(tapeName)
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-
-	lastCompact := ts.lastCompactStep
-	hasCompacted := lastCompact >= 0
-	// If current step < last recorded step, it's a new conversation cycle — reset.
-	if hasCompacted && step < lastCompact {
-		ts.lastCompactStep = 0
-		return true
-	}
-
-	gap := 0
-	if hasCompacted {
-		gap = step - lastCompact
-	}
-
-	compactGap := a.config.AgentPolicy.Context.CompactGap
-	if compactGap <= 0 {
-		compactGap = 3
-	}
-	pressureOverrideGap := a.config.AgentPolicy.Context.PressureOverrideGap
-	if pressureOverrideGap <= 0 {
-		pressureOverrideGap = 1
-	}
-
-	// Normal rule: allow if never compacted or at least compactGap steps have passed.
-	if !hasCompacted || gap >= compactGap {
-		return true
-	}
-
-	// Pressure override: if the context is already above the compact threshold,
-	// allow compaction after pressureOverrideGap steps.
-	if limit > 0 && estimatedTokens > 0 && gap >= pressureOverrideGap {
-		if float64(estimatedTokens) >= float64(limit)*threshold {
-			return true
-		}
-	}
-
-	return false
+	allowed := ts.coordinator.ShouldCompact(step, estimatedTokens, limit, threshold, a.config.AgentPolicy.Context, trigger)
+	// Mirror the coordinator's step into the legacy field for persistence.
+	ts.lastCompactStep = ts.coordinator.LastCompactStep()
+	return allowed
 }
 
 // CanCompactTool checks whether the built-in compact tool is allowed to run on
@@ -543,11 +537,77 @@ func (a *Agent) CanCompactTool(tapeName string) bool {
 
 // recordCompactStep records that a compact occurred at the given step.
 func (a *Agent) recordCompactStep(tapeName string, step int) {
+	a.recordCompactStepWithTrigger(tapeName, step, triggerPreemptive)
+}
+
+// recordCompactStepWithTrigger records a compact and classifies it so the
+// coordinator's per-cycle cap only counts voluntary compacts.
+func (a *Agent) recordCompactStepWithTrigger(tapeName string, step int, trigger compactTrigger) {
 	ts := a.tapeStates.getOrCreate(tapeName)
 	ts.mu.Lock()
-	ts.lastCompactStep = step
+	ts.coordinator.RecordCompact(step, trigger)
+	ts.lastCompactStep = ts.coordinator.LastCompactStep()
 	ts.mu.Unlock()
 	a.persistTapeState(tapeName)
+}
+
+// latestSummaryCache returns the cached ID and content of the most recently
+// written compact_summary for the tape. When the ID is 0 the cache is empty.
+func (a *Agent) latestSummaryCache(tapeName string) (int, string) {
+	ts := a.tapeStates.get(tapeName)
+	if ts == nil {
+		return 0, ""
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.cachedSummaryID, ts.cachedSummaryContent
+}
+
+// setLatestSummaryCache records the most recently written compact_summary so
+// the next compaction can reuse it as inherited context without rescanning.
+func (a *Agent) setLatestSummaryCache(tapeName string, id int, content string) {
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	ts.cachedSummaryID = id
+	ts.cachedSummaryContent = content
+	ts.mu.Unlock()
+}
+
+// sessionMemoryForTape returns the per-tape SessionMemory, creating it on first
+// use. Returns nil when SessionMemory is disabled by config.
+func (a *Agent) sessionMemoryForTape(tapeName string) *SessionMemory {
+	if !a.config.AgentPolicy.Context.SessionMemory {
+		return nil
+	}
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.sessionMemory == nil {
+		ts.sessionMemory = newSessionMemory()
+	}
+	return ts.sessionMemory
+}
+
+// recordTurnToSessionMemory extracts lightweight segments from the messages of
+// a completed turn and appends them to the tape's SessionMemory. It is a no-op
+// when SessionMemory is disabled.
+func (a *Agent) recordTurnToSessionMemory(tapeName string, step int, messages []map[string]any) {
+	mem := a.sessionMemoryForTape(tapeName)
+	if mem == nil {
+		return
+	}
+	for _, seg := range extractSegmentsFromTurn(step, messages) {
+		mem.AppendSegment(seg)
+	}
+}
+
+// resetSessionMemory clears the tape's SessionMemory after a successful compact
+// so the next cycle starts fresh.
+func (a *Agent) resetSessionMemory(tapeName string) {
+	mem := a.sessionMemoryForTape(tapeName)
+	if mem != nil {
+		mem.Reset()
+	}
 }
 
 func (a *Agent) compactThreshold(tapeName string) float64 {
@@ -690,6 +750,27 @@ func (a *Agent) IsToolDiscovered(tapeName, toolName string) bool {
 	discovered := ts.discoveredTools[toolName]
 	ts.mu.Unlock()
 	return discovered
+}
+
+// DiscoveredToolNames returns the sorted names of all discovered tools for the
+// tape. Used by post-compact context rebuild to remind the model which tools
+// it already has access to.
+func (a *Agent) DiscoveredToolNames(tapeName string) []string {
+	ts := a.tapeStates.get(tapeName)
+	if ts == nil {
+		return nil
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if len(ts.discoveredTools) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ts.discoveredTools))
+	for name := range ts.discoveredTools {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // DiscoverTool marks a tool as discovered for the tape.
@@ -1019,6 +1100,10 @@ func (a *Agent) restoreTapeState(tapeName string) {
 	case int64:
 		ts.lastCompactStep = int(v)
 	}
+	// Sync the coordinator with the persisted compact step so cooldowns
+	// survive restarts. compactCount cannot be reliably reconstructed from
+	// the audit trail, so leave it at zero (a fresh cycle).
+	ts.coordinator.lastCompactStep = ts.lastCompactStep
 
 	modelOverride := ""
 	if mo, ok := latest["model_override"].(string); ok {

@@ -65,8 +65,10 @@ Content
 	}
 }
 
-func TestExtractAnalysisTag(t *testing.T) {
-	// Test case 1: Normal analysis tag
+func TestAnalysisTagIgnoredBySummaryExtractor(t *testing.T) {
+	// Analysis-tag extraction was removed as part of the LLM-judge cleanup.
+	// Verify the model's analysis section (if any) is simply ignored: the
+	// summary extractor must still return only the <summary> content.
 	content := `<analysis>
 This is the analysis section
 </analysis>
@@ -75,24 +77,12 @@ This is the analysis section
 This is the summary
 </summary>`
 
-	result := extractAnalysisTag(content)
-	if !strings.Contains(result, "analysis section") {
-		t.Errorf("Expected analysis to contain 'analysis section', got:\n%s", result)
+	result := extractSummaryTag(content)
+	if !strings.Contains(result, "This is the summary") {
+		t.Errorf("Expected summary content, got:\n%s", result)
 	}
-
-	// Test case 2: No analysis tag
-	content = "Just plain text"
-	result = extractAnalysisTag(content)
-	if result != "" {
-		t.Errorf("Expected empty string when no analysis tag, got:\n%s", result)
-	}
-
-	// Test case 3: Empty analysis
-	content = `<analysis>
-</analysis>`
-	result = extractAnalysisTag(content)
-	if result != "" {
-		t.Errorf("Expected empty string for empty analysis, got:\n%s", result)
+	if strings.Contains(result, "analysis section") {
+		t.Errorf("summary must not leak analysis content, got:\n%s", result)
 	}
 }
 

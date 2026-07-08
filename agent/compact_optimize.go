@@ -266,30 +266,29 @@ func calculateMessagesSize(messages []map[string]any) int {
 	return size
 }
 
-// extractLatestCompactSummaryFromEntries scans tape entries for the latest
-// compact_summary and returns its raw content.
+// extractLatestCompactSummaryFromEntries scans tape entries (newest first) for
+// the most recent compact_summary and returns its raw content. It early-exits
+// on the first match so the common case is O(1) rather than a full traversal.
 func extractLatestCompactSummaryFromEntries(entries []tape.TapeEntry) (summary string) {
-	_, summary, _, _ = findLatestCompactSummary(entries)
+	_, summary = findLatestCompactSummary(entries)
 	return summary
 }
 
-// findLatestCompactSummary locates the most recent compact_summary entry and
-// returns its tape ID, content, index, and the total count of compact_summary
-// entries seen. This supports rolling-summary boundary selection.
-func findLatestCompactSummary(entries []tape.TapeEntry) (id int, summary string, idx int, count int) {
-	idx = -1
-	for i, e := range entries {
+// findLatestCompactSummary locates the most recent compact_summary entry by
+// scanning from the end of the slice and returning the first match. It returns
+// the entry's tape ID and content. The previous full-traversal implementation
+// (which also counted summaries) has been removed; the count was unused.
+func findLatestCompactSummary(entries []tape.TapeEntry) (id int, summary string) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
 		if e.Kind != "compact_summary" {
 			continue
 		}
-		count++
 		if data, ok := tape.ExtractCompactSummary(e.Payload); ok {
-			summary = data.Content
-			id = e.ID
-			idx = i
+			return e.ID, data.Content
 		}
 	}
-	return
+	return 0, ""
 }
 
 // optimizeEntriesForSummary prepares tape entries for the summarizer LLM.
@@ -297,7 +296,21 @@ func findLatestCompactSummary(entries []tape.TapeEntry) (id int, summary string,
 // inherited context so the summarizer sees prior background but still
 // summarizes the newer conversation as the primary input.
 func optimizeEntriesForSummary(entries []tape.TapeEntry) []map[string]any {
-	previousSummary := extractLatestCompactSummaryFromEntries(entries)
+	return optimizeEntriesForSummaryWithCache(entries, 0, "")
+}
+
+// optimizeEntriesForSummaryWithCache is the cache-aware variant. When cachedID
+// is non-zero it is used as the inherited previous summary without scanning the
+// entries; otherwise the entries are scanned (newest-first, early exit) and the
+// result is returned. Callers that maintain a tapeState cache should prefer this
+// variant to avoid repeated O(n) traversal during compaction.
+func optimizeEntriesForSummaryWithCache(entries []tape.TapeEntry, cachedID int, cachedContent string) []map[string]any {
+	var previousSummary string
+	if cachedID != 0 && cachedContent != "" {
+		previousSummary = cachedContent
+	} else {
+		previousSummary = extractLatestCompactSummaryFromEntries(entries)
+	}
 
 	// Drop all compact_summary entries so they are not summarized twice.
 	filtered := make([]tape.TapeEntry, 0, len(entries))

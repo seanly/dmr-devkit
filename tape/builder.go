@@ -60,6 +60,7 @@ func (b *ContextBuilder) BuildMessages(entries []TapeEntry, ctx *TapeContext) []
 		// Custom selector replaces the default pipeline entirely.
 		return messages
 	}
+	messages = applyProgressiveTrim(messages, ctx)
 	return applyCompactStrategy(messages, ctx.Strategy)
 }
 
@@ -176,6 +177,241 @@ func intFromAny(v any) int {
 	default:
 		return 0
 	}
+}
+
+// applyProgressiveTrim applies the L1 graduated trimming and L3 microcompact
+// passes configured on ctx. Both are read-time transformations: they never
+// mutate the tape store, only the messages handed to the LLM.
+func applyProgressiveTrim(messages []map[string]any, ctx *TapeContext) []map[string]any {
+	if ctx == nil || len(messages) == 0 {
+		return messages
+	}
+	if ctx.GraduatedTrim {
+		messages = graduatedTrimToolResults(messages, ctx)
+	}
+	if ctx.ContextMicrocompact {
+		messages = microcompactOldToolResults(messages, ctx)
+	}
+	if ctx.SnipDropUnits > 0 {
+		messages = snipFrontUnits(messages, ctx.SnipDropUnits, ctx.SnipKeepRecentTurns)
+	}
+	return messages
+}
+
+// graduatedTrimToolResults truncates older tool_result content to a fraction of
+// the configured budget while leaving the most recent tool messages intact. The
+// kept portion preserves the head and tail of the original content with a
+// marker in between so file paths and trailing status lines survive.
+func graduatedTrimToolResults(messages []map[string]any, ctx *TapeContext) []map[string]any {
+	maxChars := ctx.ToolResultMaxChars
+	if maxChars <= 0 {
+		return messages
+	}
+	recent := ctx.RecentToolResults
+	if recent <= 0 {
+		recent = 3
+	}
+	ratio := ctx.OldToolResultRatio
+	if ratio <= 0 {
+		ratio = 0.25
+	}
+	if ratio >= 1 {
+		return messages
+	}
+	budget := int(float64(maxChars) * ratio)
+	if budget <= 0 {
+		budget = 1
+	}
+
+	// Collect indices of tool messages in order.
+	toolIdx := make([]int, 0, 8)
+	for i, m := range messages {
+		if role, _ := m["role"].(string); role == "tool" {
+			toolIdx = append(toolIdx, i)
+		}
+	}
+	if len(toolIdx) <= recent {
+		return messages
+	}
+	oldCount := len(toolIdx) - recent
+	oldSet := make(map[int]bool, oldCount)
+	for _, idx := range toolIdx[:oldCount] {
+		oldSet[idx] = true
+	}
+
+	out := make([]map[string]any, len(messages))
+	for i, m := range messages {
+		if oldSet[i] {
+			out[i] = graduatedTrimToolMessage(m, budget)
+		} else {
+			out[i] = m
+		}
+	}
+	return out
+}
+
+// graduatedTrimToolMessage truncates a single tool message's string content to
+// budget runes, keeping 75% of the budget from the head and 25% from the tail
+// with a marker describing how much was elided.
+func graduatedTrimToolMessage(msg map[string]any, budget int) map[string]any {
+	content, ok := msg["content"].(string)
+	if !ok {
+		return msg
+	}
+	runes := []rune(content)
+	if len(runes) <= budget {
+		return msg
+	}
+	headBudget := int(float64(budget) * 0.75)
+	if headBudget < 1 {
+		headBudget = 1
+	}
+	if headBudget > len(runes) {
+		headBudget = len(runes)
+	}
+	tailBudget := budget - headBudget
+	if tailBudget < 0 {
+		tailBudget = 0
+	}
+	if tailBudget > len(runes)-headBudget {
+		tailBudget = len(runes) - headBudget
+	}
+	head := string(runes[:headBudget])
+	tail := ""
+	if tailBudget > 0 {
+		tail = string(runes[len(runes)-tailBudget:])
+	}
+	elided := len(runes) - headBudget - tailBudget
+	trimmed := head + fmt.Sprintf("\n[... truncated %d chars (old result) ...]\n", elided) + tail
+	cp := shallowCopyMessage(msg)
+	cp["content"] = trimmed
+	return cp
+}
+
+// microcompactOldToolResults clears the content of tool_result messages that
+// belong to completed earlier assistant tool-call rounds, leaving only the most
+// recent round's results intact. The message structure (role/tool_call_id) is
+// preserved so tool-call pairing stays valid for OpenAI-compatible APIs.
+func microcompactOldToolResults(messages []map[string]any, ctx *TapeContext) []map[string]any {
+	// Locate the index of the most recent assistant message carrying tool_calls;
+	// every tool message before it is considered "old".
+	lastAssistantWithTools := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		role, _ := messages[i]["role"].(string)
+		if role == "assistant" {
+			if _, ok := messages[i]["tool_calls"]; ok {
+				lastAssistantWithTools = i
+			}
+			break
+		}
+	}
+	if lastAssistantWithTools < 0 {
+		return messages
+	}
+	out := make([]map[string]any, len(messages))
+	changed := false
+	for i, m := range messages {
+		role, _ := m["role"].(string)
+		if role == "tool" && i < lastAssistantWithTools {
+			content, _ := m["content"].(string)
+			if strings.TrimSpace(content) != "" {
+				cp := shallowCopyMessage(m)
+				cp["content"] = "[Old tool result content cleared]"
+				out[i] = cp
+				changed = true
+				continue
+			}
+		}
+		out[i] = m
+	}
+	if !changed {
+		return messages
+	}
+	return out
+}
+
+// snipFrontUnits drops up to maxUnits safe units from the front of the message
+// list. A safe unit is either:
+//   - a standalone user or assistant-text message (no tool_calls), or
+//   - an assistant message carrying tool_calls plus all immediately following
+//     tool messages.
+//
+// System messages, compact_summary messages, and the last keepRecentTurns
+// turns are protected and never dropped. snipFrontUnits never leaves a dangling
+// tool message (one whose tool_call_id has no preceding assistant tool_calls).
+func snipFrontUnits(messages []map[string]any, maxUnits, keepRecentTurns int) []map[string]any {
+	if maxUnits <= 0 || len(messages) == 0 {
+		return messages
+	}
+	if keepRecentTurns <= 0 {
+		keepRecentTurns = 2
+	}
+
+	// Mark protected tail: find the start index of the last keepRecentTurns
+	// turns. A "turn" boundary starts at an assistant message (with or without
+	// tool_calls) or a user message.
+	protectedStart := len(messages)
+	turnsSeen := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		role, _ := messages[i]["role"].(string)
+		if role == "assistant" || role == "user" {
+			turnsSeen++
+			protectedStart = i
+			if turnsSeen >= keepRecentTurns {
+				break
+			}
+		}
+	}
+
+	dropped := 0
+	out := make([]map[string]any, 0, len(messages))
+	i := 0
+	for i < len(messages) {
+		if dropped >= maxUnits || i >= protectedStart {
+			out = append(out, messages[i])
+			i++
+			continue
+		}
+		role, _ := messages[i]["role"].(string)
+		// Never snip system / compact_summary messages: keep them in place.
+		if role == "system" {
+			out = append(out, messages[i])
+			i++
+			continue
+		}
+		if role == "assistant" {
+			if _, hasCalls := messages[i]["tool_calls"]; hasCalls {
+				// Drop the assistant message and its trailing tool messages.
+				i++
+				for i < len(messages) {
+					r, _ := messages[i]["role"].(string)
+					if r != "tool" {
+						break
+					}
+					if i >= protectedStart {
+						break
+					}
+					i++
+				}
+				dropped++
+				continue
+			}
+			// Assistant text-only message: drop it.
+			i++
+			dropped++
+			continue
+		}
+		if role == "user" {
+			i++
+			dropped++
+			continue
+		}
+		// tool message at the front with no preceding assistant (dangling):
+		// keep it rather than risk breaking pairing.
+		out = append(out, messages[i])
+		i++
+	}
+	return out
 }
 
 func buildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]any {

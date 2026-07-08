@@ -92,12 +92,57 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, triggerReason
 		return "", nil
 	}
 
+	// L5/L6: prefer locally-assembled session memory so the common case does not
+	// require an LLM call at all.
+	if mem := a.sessionMemoryForTape(tapeName); mem != nil {
+		if summary, tokens, ok := a.trySessionMemoryCompaction(mem); ok {
+			quality := evaluateCompactSummary(summary)
+			stats := CompactSummaryStats{Strategy: "session_memory", OptimizedTokens: tokens}
+			slog.Info("compact: using session-memory summary (no LLM call)",
+				"tape", tapeName, "chars", len(summary), "quality", quality.String())
+			return a.writeCompactEntries(ctx, tapeName, anchorName, triggerReason, summary, quality, stats)
+		}
+		// Session memory present but too sparse; fall back to LLM unless disabled.
+		if !a.config.AgentPolicy.Context.SessionMemoryFallback {
+			slog.Info("compact: session memory insufficient and fallback disabled", "tape", tapeName)
+			quality := CompactQualityUnknown
+			stats := CompactSummaryStats{Strategy: "session_memory_skipped"}
+			return a.writeCompactEntries(ctx, tapeName, anchorName, triggerReason, "", quality, stats)
+		}
+	}
+
 	summary, quality, stats, err := a.generateCompactSummary(ctx, tapeName)
 	if err != nil {
 		slog.Error("compact: summarization failed", "error", err)
 		return "", err
 	}
 
+	return a.writeCompactEntries(ctx, tapeName, anchorName, triggerReason, summary, quality, stats)
+}
+
+// trySessionMemoryCompaction assembles the tape's SessionMemory into a
+// structured summary. It returns the summary text, an estimated token count,
+// and ok=true when the memory is rich enough to use directly (no LLM call).
+func (a *Agent) trySessionMemoryCompaction(mem *SessionMemory) (string, int, bool) {
+	if mem == nil || mem.IsEmpty() {
+		return "", 0, false
+	}
+	summary, tokens := mem.assembleSummary(minSessionMemoryChars, maxSessionMemoryChars, 3)
+	if summary == "" {
+		return "", 0, false
+	}
+	return summary, tokens, true
+}
+
+// writeCompactEntries persists a compact summary (or a state-only fallback when
+// the summary is poor/empty), updates caches and session memory, and notifies
+// hooks. Shared by the session-memory and LLM summarization paths.
+func (a *Agent) writeCompactEntries(
+	ctx context.Context,
+	tapeName, anchorName, triggerReason, summary string,
+	quality CompactQuality,
+	stats CompactSummaryStats,
+) (string, error) {
 	skipSummary := false
 	anchorState := map[string]any{}
 	if quality == CompactQualityPoor && a.config.AgentPolicy.Context.QualityFallback {
@@ -123,11 +168,22 @@ func (a *Agent) compact(ctx context.Context, tapeName, anchorName, triggerReason
 		slog.Error("compact: failed to write compact entries", "error", err)
 		return "", err
 	}
+
+	// A successful compact starts a fresh memory cycle.
+	a.resetSessionMemory(tapeName)
+
+	// Re-attach a minimal working environment (recent files, discovered tools)
+	// so the model does not start the post-compact turn from an empty context.
+	a.rebuildPostCompactContext(ctx, tapeName)
+
 	for _, e := range entries {
 		if e.Kind != "compact_summary" {
 			continue
 		}
 		if c, ok := e.Payload["content"].(string); ok {
+			// Cache the freshly written summary so the next compaction can reuse
+			// it as inherited context without scanning the tape again.
+			a.setLatestSummaryCache(tapeName, e.ID, c)
 			slog.Info("compact: summary generated", "chars", len(c), "quality", quality.String(), "summary", c)
 			if err := a.hooks.OnContextReset(ctx, tapeName, "compact"); err != nil {
 				slog.Warn("OnContextReset failed", "tape", tapeName, "reason", "compact", "error", err)
@@ -157,7 +213,8 @@ func (a *Agent) buildSummarizer(tapeName string) func(ctx context.Context, messa
 				entries, err = a.tape.Store.FetchAll(tapeName, nil)
 			}
 			if err == nil && len(entries) > 0 {
-				optimized = optimizeEntriesForSummary(entries)
+				cachedID, cachedContent := a.latestSummaryCache(tapeName)
+				optimized = optimizeEntriesForSummaryWithCache(entries, cachedID, cachedContent)
 			}
 		}
 		if optimized == nil {
@@ -248,12 +305,6 @@ func (a *Agent) buildSummarizer(tapeName string) func(ctx context.Context, messa
 		// If no summary tag was found, use the raw response (fallback)
 		if summary == rawResp && !hasSummaryTag(rawResp) {
 			slog.Warn("compact: model did not produce structured output, using raw response")
-		}
-
-		// Log analysis for debugging (optional)
-		analysis := extractAnalysisTag(rawResp)
-		if analysis != "" {
-			slog.Debug("compact: analysis section", "chars", len(analysis))
 		}
 
 		if strings.TrimSpace(summary) == "" {

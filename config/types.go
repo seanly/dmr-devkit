@@ -420,6 +420,43 @@ type ContextConfig struct {
 	// Strategy selects how tape entries are transformed into LLM messages.
 	// Valid values: summary, snip, collapse, hybrid. Empty defaults to summary.
 	Strategy CompactStrategy `toml:"compact_strategy" json:"compact_strategy,omitempty"`
+
+	// --- Progressive context management (Claude Code 7-layer alignment) ---
+
+	// GraduatedTrim applies more aggressive truncation to older tool_result
+	// content while keeping the most recent ones intact. See RecentToolResults
+	// and OldToolResultRatio.
+	GraduatedTrim bool `toml:"graduated_trim,omitempty" json:"graduated_trim,omitempty"`
+	// RecentToolResults is the number of most-recent tool_result entries that
+	// keep the full truncation length when GraduatedTrim is enabled. 0 = 3.
+	RecentToolResults int `toml:"recent_tool_results,omitempty" json:"recent_tool_results,omitempty"`
+	// OldToolResultRatio is the fraction of the truncation budget applied to
+	// older tool_result entries when GraduatedTrim is enabled (0..1). 0 = 0.25.
+	OldToolResultRatio float64 `toml:"old_tool_result_ratio,omitempty" json:"old_tool_result_ratio,omitempty"`
+
+	// SnipEnabled drops the oldest non-system, non-summary messages when the
+	// estimated token count approaches the compact threshold, deferring an
+	// expensive LLM compact. This is the L2 history-snip layer.
+	SnipEnabled bool `toml:"snip_enabled,omitempty" json:"snip_enabled,omitempty"`
+
+	// ContextMicrocompact clears the content of older tool_result messages
+	// (kept only as structural placeholders) when building context, reducing
+	// cold-prefix tokens. This is the L3 microcompact layer. It only affects
+	// read-time message construction, never the tape store.
+	ContextMicrocompact bool `toml:"microcompact,omitempty" json:"microcompact,omitempty"`
+
+	// MaxCompactsPerAnchor caps the number of voluntary (preemptive/proactive)
+	// LLM compacts allowed within a single conversation cycle before forcing
+	// lighter degradation (snip / microcompact). 0 = unlimited.
+	MaxCompactsPerAnchor int `toml:"max_compacts_per_anchor,omitempty" json:"max_compacts_per_anchor,omitempty"`
+
+	// SessionMemory enables a local, incrementally-maintained conversation
+	// memory used as the primary compact summary source. When the memory is
+	// sufficient, compaction writes it directly without an LLM call.
+	SessionMemory bool `toml:"session_memory,omitempty" json:"session_memory,omitempty"`
+	// SessionMemoryFallback allows falling back to an LLM-generated summary
+	// when session memory is empty or too small to be useful.
+	SessionMemoryFallback bool `toml:"session_memory_fallback,omitempty" json:"session_memory_fallback,omitempty"`
 }
 
 // AgentConfig configures the agent loop.

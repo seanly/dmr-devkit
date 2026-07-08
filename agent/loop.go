@@ -254,6 +254,11 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
 
+	// Seed the local session memory with the user's primary intent for this run.
+	a.recordTurnToSessionMemory(tapeName, 0, []map[string]any{
+		{"role": "user", "content": prompt},
+	})
+
 	lastPromptTokens := 0
 	lastCompletionTokens := 0
 
@@ -315,15 +320,16 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		if histAfter <= 0 && a.preemptiveCompactEnabled() {
 			estimatedTokens := tokensEst
 			a.contextBudgetForTape(tapeName).UpdateEstimated(estimatedTokens)
+			limit := a.compactContextLimit(tapeName)
+			threshold := a.compactThreshold(tapeName)
+			compacted := false
 			if estimatedTokens > 0 && a.shouldAutoHandoffByEstimate(tapeName, estimatedTokens) {
 				slog.Info("compact: preemptive trigger", "estimated_tokens", estimatedTokens)
-				limit := a.compactContextLimit(tapeName)
-				threshold := a.compactThreshold(tapeName)
-				if a.shouldCompactNow(tapeName, step, estimatedTokens, limit, threshold) {
+				if a.shouldCompact(tapeName, step, estimatedTokens, limit, threshold, triggerPreemptive) {
 					handoffName := fmt.Sprintf("auto:preemptive:%s", time.Now().UTC().Format("20060102-150405"))
 					if ok, _ := a.performContextHandoff(ctx, tapeName, handoffName, "preemptive", step); ok {
 						slog.Info("compact: preemptive handoff done", "anchor", handoffName)
-						a.recordCompactStep(tapeName, step)
+						a.recordCompactStepWithTrigger(tapeName, step, triggerPreemptive)
 
 						// Rebuild system prompt and continue with structured prompt
 						systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
@@ -336,11 +342,18 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 						})); err != nil {
 							slog.Warn("tape append failed", "tape", tapeName, "error", err)
 						}
+						compacted = true
 						continue
 					}
 				} else {
 					slog.Debug("compact: preemptive skipped (too soon or compact failed)")
 				}
+			}
+			// When no compact ran this step, try L2 history snip to shed tokens
+			// and defer the next compact. Snip mutates tapeCtx in place; opts
+			// holds the same pointer so the LLM call sees the trimmed context.
+			if !compacted && tapeCtx != nil {
+				a.applySnipForBudget(tapeName, tapeCtx, estimatedTokens, limit, threshold)
 			}
 		}
 
@@ -375,12 +388,19 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 
 			// Auto-compact on context overflow: compact and replay last round
 			if !autoHandoffDone && isContextOverflowError(err) {
+				// L7: try lightweight recovery (snip + microcompact) first so we
+				// can retry the LLM call without an expensive compact. Escalates
+				// to a full compact on the next overflow.
+				if a.tryLightweightOverflowRecovery(tapeName) {
+					continue
+				}
 				handled, handoffErr := a.handleContextOverflow(ctx, tapeName, step, currentPrompt)
 				if handoffErr != nil {
 					return nil, toolIterations, handoffErr
 				}
 				if handled {
 					autoHandoffDone = true
+					a.recordCompactStepWithTrigger(tapeName, step, triggerReactive)
 					continue
 				}
 			}
@@ -413,6 +433,8 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(assistantEntry)); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
 			}
+			// Capture the final assistant reply as a decision/summary segment.
+			a.recordTurnToSessionMemory(tapeName, step, []map[string]any{assistantEntry})
 			trManager.NoteAssistantTurn(tapeName, time.Now())
 			if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("run", map[string]any{"status": "ok"})); err != nil {
 				slog.Warn("tape append failed", "tape", tapeName, "error", err)
@@ -535,6 +557,30 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				ToolResults: result.ToolResults,
 			})
 
+			// Capture this tool round for the local session memory. Tag each tool
+			// message with its name so extractSegmentsFromTurn can classify it.
+			turnMsgs := make([]map[string]any, 0, len(msgs))
+			if len(result.ToolCalls) > 0 {
+				turnMsgs = append(turnMsgs, msgs[0]) // assistant message with tool_calls
+			}
+			for i, tr := range result.ToolResults {
+				toolName := ""
+				if i < len(result.ToolCalls) {
+					toolName = result.ToolCalls[i].Function.Name
+				}
+				callID := ""
+				if i < len(result.ToolCalls) {
+					callID = result.ToolCalls[i].ID
+				}
+				turnMsgs = append(turnMsgs, map[string]any{
+					"role":         "tool",
+					"tool_call_id": callID,
+					"tool_name":    toolName,
+					"content":      fmt.Sprintf("%v", tr),
+				})
+			}
+			a.recordTurnToSessionMemory(tapeName, step, turnMsgs)
+
 			toolNames := make([]string, 0, len(result.ToolCalls))
 			denyCount := 0
 			for i, tr := range result.ToolResults {
@@ -656,7 +702,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				limit := a.compactContextLimit(tapeName)
 				threshold := a.compactThreshold(tapeName)
 
-				if !a.shouldCompactNow(tapeName, step, pt, limit, threshold) {
+				if !a.shouldCompact(tapeName, step, pt, limit, threshold, triggerProactive) {
 					slog.Warn("compact: skipped (too soon after last compact)", "current_step", step)
 				} else {
 					slog.Info("compact: triggered", "prompt_tokens", pt, "limit", limit, "threshold", threshold, "effective_limit", int(float64(limit)*threshold))
@@ -668,7 +714,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 						slog.Error("compact: proactive handoff failed")
 					}
 
-					a.recordCompactStep(tapeName, step)
+					a.recordCompactStepWithTrigger(tapeName, step, triggerProactive)
 
 					currentPrompt = continueAfterCompactPrompt
 

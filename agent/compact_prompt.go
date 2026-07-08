@@ -89,7 +89,6 @@ Please continue from where we left off. Use the summary as your working memory. 
 
 var (
 	reSummaryTag   = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
-	reAnalysisTag  = regexp.MustCompile(`(?s)<analysis>(.*?)</analysis>`)
 	reSummaryCheck = regexp.MustCompile(`(?s)<summary>.*?</summary>`)
 )
 
@@ -105,18 +104,6 @@ func extractSummaryTag(content string) string {
 
 	// No summary tag found, return original content
 	return strings.TrimSpace(content)
-}
-
-// extractAnalysisTag extracts the content between <analysis>...</analysis> tags.
-// This is useful for debugging or logging the model's thought process.
-func extractAnalysisTag(content string) string {
-	matches := reAnalysisTag.FindStringSubmatch(content)
-
-	if len(matches) > 1 {
-		return strings.TrimSpace(matches[1])
-	}
-
-	return ""
 }
 
 // hasSummaryTag checks if the content contains a <summary> tag.

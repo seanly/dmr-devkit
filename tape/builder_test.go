@@ -1,6 +1,7 @@
 package tape
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/seanly/dmr-devkit/config"
@@ -115,4 +116,151 @@ func TestContextBuilderAppliesStrategy(t *testing.T) {
 	if msgs[0]["content"] != "hello" || msgs[1]["content"] != "world" {
 		t.Errorf("unexpected messages: %v", msgs)
 	}
+}
+
+func TestGraduatedTrimOldToolResults(t *testing.T) {
+	long := strings.Repeat("x", 1000)
+	msgs := []map[string]any{
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1"}}},
+		{"role": "tool", "tool_call_id": "c1", "content": long},
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c2"}}},
+		{"role": "tool", "tool_call_id": "c2", "content": long},
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c3"}}},
+		{"role": "tool", "tool_call_id": "c3", "content": long},
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c4"}}},
+		{"role": "tool", "tool_call_id": "c4", "content": long},
+	}
+	ctx := &TapeContext{
+		KeepSummary:        true,
+		GraduatedTrim:      true,
+		RecentToolResults:  2,
+		OldToolResultRatio: 0.25,
+		ToolResultMaxChars: 400,
+	}
+	out := applyProgressiveTrim(msgs, ctx)
+
+	// First two tool messages (oldest) should be trimmed; last two kept intact.
+	trimmed1, _ := out[1]["content"].(string)
+	trimmed2, _ := out[3]["content"].(string)
+	kept3, _ := out[5]["content"].(string)
+	kept4, _ := out[7]["content"].(string)
+
+	if !strings.Contains(trimmed1, "[... truncated") {
+		t.Errorf("oldest tool result should be trimmed, got %q", trimmed1[:min(50, len(trimmed1))])
+	}
+	if !strings.Contains(trimmed2, "[... truncated") {
+		t.Errorf("second tool result should be trimmed, got %q", trimmed2[:min(50, len(trimmed2))])
+	}
+	if kept3 != long {
+		t.Errorf("recent tool result should be kept intact")
+	}
+	if kept4 != long {
+		t.Errorf("most recent tool result should be kept intact")
+	}
+	// Trimmed budget ~ 400*0.25 = 100 runes + marker; well below original 1000.
+	if len([]rune(trimmed1)) >= 1000 {
+		t.Errorf("trimmed content should be shorter than original")
+	}
+}
+
+func TestMicrocompactOldToolResults(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1"}}},
+		{"role": "tool", "tool_call_id": "c1", "content": "old big result"},
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c2"}}},
+		{"role": "tool", "tool_call_id": "c2", "content": "fresh big result"},
+	}
+	ctx := &TapeContext{KeepSummary: true, ContextMicrocompact: true}
+	out := applyProgressiveTrim(msgs, ctx)
+
+	if out[1]["content"] != "[Old tool result content cleared]" {
+		t.Errorf("old tool result should be cleared, got %v", out[1]["content"])
+	}
+	if out[3]["content"] != "fresh big result" {
+		t.Errorf("recent tool result should be kept, got %v", out[3]["content"])
+	}
+	if out[1]["role"] != "tool" || out[1]["tool_call_id"] != "c1" {
+		t.Errorf("cleared tool message should retain structure: %v", out[1])
+	}
+}
+
+func TestGraduatedTrimNoBudgetNoop(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "tool", "tool_call_id": "c1", "content": "data"},
+	}
+	// ToolResultMaxChars == 0 → no trimming.
+	ctx := &TapeContext{GraduatedTrim: true, RecentToolResults: 3, OldToolResultRatio: 0.25}
+	out := applyProgressiveTrim(msgs, ctx)
+	if out[0]["content"] != "data" {
+		t.Errorf("expected no trim without budget, got %v", out[0]["content"])
+	}
+}
+
+func TestSnipFrontUnits_DropsSafeUnits(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "system", "content": "sysprompt"},
+		{"role": "user", "content": "old user 1"},
+		{"role": "assistant", "content": "old reply 1"},
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1"}}},
+		{"role": "tool", "tool_call_id": "c1", "content": "old tool result"},
+		{"role": "user", "content": "keep me recent"},
+		{"role": "assistant", "content": "recent reply"},
+	}
+	// Drop 3 units; last 2 turns protected.
+	out := snipFrontUnits(msgs, 3, 2)
+
+	// System must survive.
+	if out[0]["role"] != "system" {
+		t.Errorf("system message must not be snipped: %v", out[0])
+	}
+	// The protected recent turns must survive.
+	var contents []string
+	for _, m := range out {
+		if c, ok := m["content"].(string); ok && c != "" {
+			contents = append(contents, c)
+		}
+	}
+	if !containsStr(contents, "keep me recent") || !containsStr(contents, "recent reply") {
+		t.Errorf("recent turns should be protected, got: %v", contents)
+	}
+	// Old content should be gone.
+	if containsStr(contents, "old user 1") || containsStr(contents, "old tool result") {
+		t.Errorf("old messages should be snipped, got: %v", contents)
+	}
+	// No dangling tool message: every tool message must have a preceding
+	// assistant with tool_calls.
+	for i, m := range out {
+		if m["role"] == "tool" {
+			if i == 0 || out[i-1]["role"] != "assistant" {
+				if _, ok := out[i-1]["tool_calls"]; !ok && out[i-1]["role"] == "assistant" {
+					t.Errorf("dangling tool message at %d", i)
+				}
+			}
+		}
+	}
+}
+
+func TestSnipFrontUnits_NoBreakToolPairing(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1"}}},
+		{"role": "tool", "tool_call_id": "c1", "content": "result"},
+		{"role": "assistant", "content": "final"},
+	}
+	// Dropping 1 unit must drop the assistant+tool pair together, leaving "final".
+	out := snipFrontUnits(msgs, 1, 1)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 message after snipping the tool-call pair, got %d: %v", len(out), out)
+	}
+	if out[0]["content"] != "final" {
+		t.Errorf("expected final assistant message to survive, got %v", out[0])
+	}
+}
+
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

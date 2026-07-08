@@ -311,15 +311,31 @@ pressure_override_gap = 1
 quality_fallback = false
 quality_fallback_keep_before = 0
 
-rolling_summary = false
-rolling_summary_full_refresh = 5
-
-semantic_collapse = false
+# Progressive context management (7-layer alignment)
+graduated_trim = true
+recent_tool_results = 3
+old_tool_result_ratio = 0.25
+snip_enabled = true
+microcompact = true
+max_compacts_per_anchor = 2
+session_memory = true
+session_memory_fallback = true
 ```
 
-- `compact_strategy`: `summary` (default), `snip`, `collapse`, `hybrid`, `semantic_collapse`.
-- `rolling_summary` / `rolling_summary_full_refresh`: rolling summary control.
-- `semantic_collapse`: enable tool-interaction collapse for summarizer input.
+- `compact_strategy`: `summary` (default), `snip`, `collapse`, `hybrid`.
+- `graduated_trim` / `recent_tool_results` / `old_tool_result_ratio`: L1 — older `tool_result` content is truncated to `tool_result_max_chars * ratio` while the most recent N stay intact.
+- `snip_enabled`: L2 — drop oldest non-system, non-summary messages when approaching the threshold, deferring an LLM compact.
+- `microcompact`: L3 — clear older `tool_result` content into placeholders on read (read-time only; the tape store is untouched).
+- `max_compacts_per_anchor`: cap voluntary (preemptive/proactive) compacts per conversation cycle; once reached the loop forces lighter degradation instead of "summary of a summary".
+- `session_memory` / `session_memory_fallback`: L5/L6 — a locally-assembled, incrementally-maintained conversation memory serves as the compact summary directly, avoiding an LLM call. When too sparse, the loop falls back to LLM summarization (if `session_memory_fallback = true`).
+
+> Note: the legacy `rolling_summary`, `rolling_summary_full_refresh`, and `semantic_collapse`
+> config keys have been removed. Rolling-summary inheritance is now served from a per-tape
+> cache populated when a `compact_summary` is written (`findLatestCompactSummary` scans
+> newest-first with early exit). `SemanticCollapseMessages` and its helpers
+> (`semanticCollapseMessages`, `extractToolCalls`, `toolCallNameAndArgs`) were removed entirely
+> — they had no production callers; session memory records tool-interaction semantics instead.
+> The LLM summary judge (`compact_judge.go`) was also removed entirely.
 
 ### Agent Config
 
@@ -328,6 +344,56 @@ semantic_collapse = false
 max_token = 128000
 handoff_threshold = 0.75
 ```
+
+---
+
+## Progressive Context Management (7-layer alignment)
+
+dmr-devkit aligns with Claude Code's layered context model. Each layer is
+"lighter before heavier" so an LLM compact is the last resort, not the first.
+
+| Layer | Mechanism | Config | File |
+|-------|-----------|--------|------|
+| L1 | Graduated tool_result trimming | `graduated_trim` | `tape/builder.go` |
+| L2 | History snip (drop oldest safe units) | `snip_enabled` | `agent/snip.go`, `tape/builder.go` |
+| L3 | Microcompact (clear old tool content) | `microcompact` | `tape/builder.go` |
+| L4 | Compact coordinator (cooldown + cap) | `max_compacts_per_anchor` | `agent/compact_coordinator.go` |
+| L5 | Session memory summary (no LLM) | `session_memory` | `agent/session_memory.go` |
+| L6 | Post-compact context rebuild | — (automatic) | `agent/post_compact_rebuild.go` |
+| L7 | Reactive recovery (lightweight retry → compact) | `snip_enabled` | `agent/reactive_recovery.go` |
+
+### Compact Coordinator (L4)
+
+All compact triggers (preemptive, proactive, reactive, manual) route through a
+single `CompactCoordinator` per tape. It enforces:
+
+- A cooldown gap (`compact_gap`) between voluntary compacts.
+- A pressure override (`pressure_override_gap`) when tokens already exceed the threshold.
+- A per-cycle cap (`max_compacts_per_anchor`) that forces lighter degradation once reached.
+
+Reactive (overflow) and manual compacts bypass the cap; the loop's
+`autoHandoffDone` guard and `reactiveSnipAttempts` bound retries.
+
+### Session Memory (L5)
+
+`SessionMemory` captures lightweight, rule-extracted segments each turn
+(user intent, tool results, file changes, errors, decisions) — no LLM calls.
+On compact, the memory is assembled into a structured 9-section summary and
+written directly, skipping the summarizer LLM call entirely in the common case.
+
+### Post-compact rebuild (L6)
+
+After a compact, `rebuildPostCompactContext` appends a system entry listing
+recently-accessed files (extracted from `tool_call` entries) and the names of
+already-discovered tools, so the model does not start the post-compact turn
+from an empty context.
+
+### Reactive recovery (L7)
+
+On a context-overflow API error, the loop first tries a lightweight recovery
+(aggressive snip + microcompact on the next context build) and retries the LLM
+call. If it overflows again, it escalates to a full compact. This avoids an
+expensive compact when a quick trim would suffice.
 
 ---
 
@@ -345,9 +411,11 @@ handoff_threshold = 0.75
 
 3. **Enable preemptive compaction** for long-running sessions
 
-4. **Use rolling summary** for conversations with frequent compacts
+4. **Enable session memory** (`session_memory = true`) for conversations with
+   frequent compacts — most compacts then need no LLM call at all.
 
-5. **Use semantic collapse** for tool-heavy sessions
+5. **Enable graduated trim + microcompact** for tool-heavy sessions to shed
+   older tool_result tokens without compaction.
 
 ### For Operators
 
@@ -359,6 +427,9 @@ handoff_threshold = 0.75
 
 ## Migrating from earlier configs
 
-- `rolling_summary` was removed in an earlier version because it was unimplemented; it is now a real feature.
-- `quality_fallback = true` now skips writing poor summaries to tape entirely (previously it only suppressed them at read time).
-- New metrics appear automatically in `loop:compact` events.
+- `rolling_summary` / `rolling_summary_full_refresh` config keys are removed. Rolling-summary inheritance is now a per-tape cache populated on compact; the summarizer reuses it via `optimizeEntriesForSummaryWithCache`.
+- `semantic_collapse` config key is removed; `SemanticCollapseMessages` and its helpers are deleted (no production callers remained).
+- The LLM summary judge (`agent/compact_judge.go`) is removed; the heuristic `evaluateCompactSummary` remains as the quality guard.
+- `quality_fallback = true` skips writing poor summaries to tape entirely (previously it only suppressed them at read time).
+- New progressive-management keys (`graduated_trim`, `snip_enabled`, `microcompact`, `max_compacts_per_anchor`, `session_memory`, `session_memory_fallback`) are all opt-in (default false).
+- New metrics appear automatically in `loop:compact` events (`strategy = "session_memory"` marks a no-LLM compact).

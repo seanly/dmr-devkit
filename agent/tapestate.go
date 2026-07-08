@@ -13,15 +13,21 @@ import (
 // the map itself and coordinates LRU eviction. This eliminates the previous
 // split-lock design that caused deadlocks and lock-order inversions.
 type tapeState struct {
-	mu              sync.Mutex
-	chatClient      *client.ChatClient
-	sessionStarted  bool
-	modelOverride   string
-	lastCompactStep int
-	discoveredTools map[string]bool // toolName -> discovered
-	toolsCache      []*tool.Tool    // cached eligible tools for this tape
-	lastAccessed    int64           // unix nanos for LRU eviction
-	budget          *contextBudget
+	mu                       sync.Mutex
+	chatClient               *client.ChatClient
+	sessionStarted           bool
+	modelOverride            string
+	lastCompactStep          int
+	discoveredTools          map[string]bool // toolName -> discovered
+	toolsCache               []*tool.Tool    // cached eligible tools for this tape
+	lastAccessed             int64           // unix nanos for LRU eviction
+	budget                   *contextBudget
+	coordinator              CompactCoordinator // unified compact gating
+	cachedSummaryID          int               // tape ID of the last written compact_summary
+	cachedSummaryContent     string            // content of the last written compact_summary
+	sessionMemory            *SessionMemory    // local incremental conversation memory
+	reactiveSnipPending      bool              // L7: apply aggressive snip on next context build
+	reactiveSnipAttempts     int               // L7: cap lightweight retries before full compact
 }
 
 func newTapeState() *tapeState {
@@ -31,6 +37,7 @@ func newTapeState() *tapeState {
 		lastAccessed:    time.Now().UnixNano(),
 		budget:          newContextBudget(),
 		lastCompactStep: -1,
+		coordinator:     newCompactCoordinator(),
 	}
 }
 
