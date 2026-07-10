@@ -22,7 +22,7 @@ func DefaultConfig() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		Paths:            []string{filepath.Join(home, ".dmr", "skills", "local")},
-		AutoCreatePath:   filepath.Join(home, ".dmr", "skills", "learner"),
+		AutoCreatePath:   filepath.Join(home, ".dmr", "skills", "auto"),
 		MaxAutoSkills:    20,
 		ArchiveStaleDays: 30,
 		AllowCreate:      true,

@@ -17,7 +17,7 @@ func (m *Manager) skillCreateTool() *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
 			Name:        "skillCreate",
-			Description: "Create a new skill. The skill will be saved to the learner directory with group forced to 'extended'.",
+			Description: "Create a new skill. The skill will be saved to the auto-create directory with group forced to 'extended'.",
 			Group:       m.toolGroup,
 			Parameters: map[string]any{
 				"type": "object",
