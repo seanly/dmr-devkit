@@ -237,7 +237,10 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	if !alreadyStarted {
 		anchors, _ := a.tape.Store.FetchAll(tapeName, &tape.FetchOpts{Kinds: []string{"anchor"}})
 		if len(anchors) == 0 {
-			a.Handoff(tapeName, "session/start", map[string]any{"owner": "human"})
+			a.Handoff(tapeName, "session/start", map[string]any{
+				"owner":                    "human",
+				tape.StateKeyAnchorUUID: tape.NewUUID(),
+			})
 		}
 	}
 	systemPrompt := mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)

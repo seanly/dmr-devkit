@@ -270,3 +270,58 @@ func TestCompact_PreGeneratedSummaryAndQuality(t *testing.T) {
 		t.Errorf("event quality = %v, want poor", got)
 	}
 }
+
+func TestCompact_RecordsPreviousAnchorMetadata(t *testing.T) {
+	store := NewInMemoryTapeStore()
+	mgr := NewTapeManager(store)
+
+	prevUUID := "550e8400-e29b-41d4-a716-446655440000"
+	prevAnchor := NewAnchorEntry("session/start", map[string]any{StateKeyAnchorUUID: prevUUID})
+	_ = store.Append("test_tape", prevAnchor)
+	_ = store.Append("test_tape", NewMessageEntry(map[string]any{"role": "user", "content": "hello"}))
+	_ = store.Append("test_tape", NewToolCallEntry([]map[string]any{
+		{"id": "1", "type": "function", "function": map[string]any{"name": "tapeSearch", "arguments": `{}`}},
+	}))
+
+	created, err := mgr.Compact(context.Background(), CompactOpts{
+		Tape:          "test_tape",
+		AnchorName:    "auto:preemptive:test",
+		TriggerReason: "preemptive",
+		Summary:       "summary text",
+		Quality:       "good",
+	})
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(created) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(created))
+	}
+	if created[0].Kind != "anchor" {
+		t.Fatalf("expected anchor first, got %q", created[0].Kind)
+	}
+
+	st := AnchorState(created[0])
+	if got := AnchorUUIDFromEntry(created[0]); got == "" {
+		t.Fatal("expected new compact anchor to have anchor_uuid")
+	}
+	if st["previous_anchor_name"] != "session/start" {
+		t.Errorf("previous_anchor_name = %v, want session/start", st["previous_anchor_name"])
+	}
+	if st["previous_anchor_uuid"] != prevUUID {
+		t.Errorf("previous_anchor_uuid = %v, want %s", st["previous_anchor_uuid"], prevUUID)
+	}
+	if st["trigger_reason"] != "preemptive" {
+		t.Errorf("trigger_reason = %v, want preemptive", st["trigger_reason"])
+	}
+	if id, ok := st["previous_anchor_entry_id"].(int); !ok || id != prevAnchor.ID {
+		t.Errorf("previous_anchor_entry_id = %v, want %d", st["previous_anchor_entry_id"], prevAnchor.ID)
+	}
+
+	data, _ := created[2].Payload["data"].(map[string]any)
+	if data["previous_anchor_uuid"] != prevUUID {
+		t.Errorf("event previous_anchor_uuid = %v, want %s", data["previous_anchor_uuid"], prevUUID)
+	}
+	if data["trigger_reason"] != "preemptive" {
+		t.Errorf("event trigger_reason = %v, want preemptive", data["trigger_reason"])
+	}
+}

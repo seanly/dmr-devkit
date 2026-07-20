@@ -433,3 +433,53 @@ func TestCompact_SessionMemorySkipsLLMCall(t *testing.T) {
 		t.Errorf("session-memory summary should mention the coordinator, got:\n%s", summary)
 	}
 }
+
+func TestWriteCompactEntries_PostCompactRebuildWithAnchorMetadata(t *testing.T) {
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	a := newSummarizerTestAgent(&summarizerFakeClient{})
+	a.tape = tm
+
+	prevUUID := "550e8400-e29b-41d4-a716-446655440000"
+	if _, err := tm.Handoff("meta-tape", "session/start", map[string]any{tape.StateKeyAnchorUUID: prevUUID}); err != nil {
+		t.Fatalf("Handoff failed: %v", err)
+	}
+	_ = tm.AppendEntry("meta-tape", tape.NewMessageEntry(map[string]any{"role": "user", "content": "find bugs"}))
+	_ = tm.AppendEntry("meta-tape", tape.NewToolCallEntry([]map[string]any{
+		{"id": "1", "type": "function", "function": map[string]any{"name": "tapeSearch", "arguments": `{"query":"bug"}`}},
+	}))
+
+	if _, err := a.writeCompactEntries(context.Background(), "meta-tape", "auto:proactive:test", "proactive",
+		"summary about bugs", CompactQualityGood, CompactSummaryStats{Strategy: "test"}); err != nil {
+		t.Fatalf("writeCompactEntries failed: %v", err)
+	}
+
+	entries, _ := store.FetchAll("meta-tape", nil)
+	var anchorState map[string]any
+	var rebuildContent string
+	for _, e := range entries {
+		if e.Kind == "anchor" && e.Payload["name"] == "auto:proactive:test" {
+			anchorState = tape.AnchorState(e)
+		}
+		if e.Kind == "system" {
+			if c, ok := e.Payload["content"].(string); ok && strings.Contains(c, "[Post-Compact Context Rebuild]") {
+				rebuildContent = c
+			}
+		}
+	}
+	if anchorState == nil {
+		t.Fatal("expected compact anchor")
+	}
+	if anchorState["previous_anchor_uuid"] != prevUUID {
+		t.Errorf("anchor previous_anchor_uuid = %v, want %s", anchorState["previous_anchor_uuid"], prevUUID)
+	}
+	if rebuildContent == "" {
+		t.Fatal("expected post-compact rebuild system entry")
+	}
+	if !strings.Contains(rebuildContent, "between_uuid=") {
+		t.Errorf("rebuild should include between_uuid guidance, got:\n%s", rebuildContent)
+	}
+	if !strings.Contains(rebuildContent, "tapeSearch") {
+		t.Errorf("rebuild should mention archived tool hints, got:\n%s", rebuildContent)
+	}
+}

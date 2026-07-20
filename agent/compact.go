@@ -163,18 +163,27 @@ func (a *Agent) writeCompactEntries(
 		Quality:        quality.String(),
 		SkipSummary:    skipSummary,
 		AnchorState:    anchorState,
+		TriggerReason:  triggerReason,
 	})
 	if err != nil {
 		slog.Error("compact: failed to write compact entries", "error", err)
 		return "", err
 	}
 
+	var compactMeta compactAnchorMeta
+	for _, e := range entries {
+		if e.Kind == "anchor" {
+			compactMeta = compactAnchorMetaFromEntry(e)
+			break
+		}
+	}
+
 	// A successful compact starts a fresh memory cycle.
 	a.resetSessionMemory(tapeName)
 
-	// Re-attach a minimal working environment (recent files, discovered tools)
-	// so the model does not start the post-compact turn from an empty context.
-	a.rebuildPostCompactContext(ctx, tapeName)
+	// Re-attach a minimal working environment (recent files, discovered tools,
+	// archived-window tapeSearch hints) so the model does not start empty.
+	a.rebuildPostCompactContext(ctx, tapeName, compactMeta)
 
 	for _, e := range entries {
 		if e.Kind != "compact_summary" {

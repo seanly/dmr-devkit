@@ -143,6 +143,18 @@ type AnchorInfo struct {
 	AnchorUUID string
 }
 
+// LastAnchorEntry returns the most recent anchor on tapeName, if any.
+func LastAnchorEntry(store TapeStore, tapeName string) (TapeEntry, bool, error) {
+	entries, err := store.FetchAll(tapeName, &FetchOpts{Kinds: []string{"anchor"}})
+	if err != nil {
+		return TapeEntry{}, false, err
+	}
+	if len(entries) == 0 {
+		return TapeEntry{}, false, nil
+	}
+	return entries[len(entries)-1], true, nil
+}
+
 // ListAnchorsWithUUID returns anchors on tapeName in tape order with UUIDs when present.
 func ListAnchorsWithUUID(store TapeStore, tapeName string) ([]AnchorInfo, error) {
 	entries, err := store.FetchAll(tapeName, &FetchOpts{Kinds: []string{"anchor"}})

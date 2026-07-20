@@ -144,7 +144,9 @@ func (a *Agent) buildContinuationPrompt(info *contextOverflowInfo) string {
 
 	builder.WriteString("The tool results were too large. Please continue with the original task, ")
 	builder.WriteString("but use more specific queries (e.g., pagination, filters) to avoid large results. ")
-	builder.WriteString("If you need details from earlier in the conversation, use tapeSearch instead of guessing.")
+	builder.WriteString("The summary and [Post-Compact Context Rebuild] system note are your working memory. ")
+	builder.WriteString("For full tool outputs from the archived window, use tapeSearch(between_uuid=\"<prev_uuid>,<new_uuid>\", kinds=[\"tool_result\"], scope=\"all\"); ")
+	builder.WriteString("if the previous anchor has no UUID, use tapeSearch(scope=\"all\", kinds=[\"tool_result\"], query=\"<keywords>\") instead of guessing.")
 
 	return builder.String()
 }

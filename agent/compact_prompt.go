@@ -77,15 +77,22 @@ Requirements:
 - Do NOT output <analysis> tags, markdown code fences, or meta-commentary about how you produced the summary.`
 
 // continueAfterCompactPrompt is used after preemptive/proactive compact to help LLM continue smoothly.
-const continueAfterCompactPrompt = `I have compacted the conversation history to manage context size. The summary above captures:
+const continueAfterCompactPrompt = `I have compacted the conversation history to manage context size. The summary above is your working memory for continuing the task.
 
+It captures:
 - **Your original request and intent**
 - **Key work completed**: files examined, modified, or created
 - **Active constraints and preferences**
 - **Pending tasks** that still need attention
 - **Current status**: what was being worked on immediately before this compact
 
-Please continue from where we left off. Use the summary as your working memory. If you need specific details from earlier in the conversation, use tapeSearch or ask the user rather than guessing.`
+Full tool outputs from the archived window are NOT in the summary. The [Post-Compact Context Rebuild] system note lists the previous anchor UUIDs and a ready-made tapeSearch example.
+
+To retrieve archived tool results:
+- Prefer: tapeSearch(between_uuid="<prev_uuid>,<new_uuid>", kinds=["tool_result"], scope="all")
+- If the previous anchor has no UUID: tapeSearch(scope="all", kinds=["tool_result"], query="<keywords>")
+
+Please continue from where we left off. Use the summary as working memory and tapeSearch for full historical tool payloads rather than guessing.`
 
 var (
 	reSummaryTag   = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)

@@ -133,6 +133,7 @@ type CompactOpts struct {
 	Quality        string         // optional quality label: good/fair/poor
 	SkipSummary    bool           // when true, write only anchor + event (no compact_summary)
 	AnchorState    map[string]any // optional extra state stored in the anchor payload
+	TriggerReason  string         // optional compact trigger label (preemptive, proactive, overflow, manual)
 }
 
 // Compact generates a summary of the current tape context and creates a compact anchor.
@@ -181,9 +182,28 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	if name == "" {
 		name = fmt.Sprintf("compact:%s", time.Now().UTC().Format("20060102-150405"))
 	}
+	prevAnchor, hasPrev, err := LastAnchorEntry(m.Store, opts.Tape)
+	if err != nil {
+		return nil, fmt.Errorf("resolve previous anchor: %w", err)
+	}
+	anchorUUID := NewUUID()
 	anchorState := map[string]any{
-		"entries_count":  len(entries),
-		"messages_count": len(messages),
+		StateKeyAnchorUUID: anchorUUID,
+		"entries_count":    len(entries),
+		"messages_count":   len(messages),
+	}
+	if opts.TriggerReason != "" {
+		anchorState["trigger_reason"] = opts.TriggerReason
+	}
+	if hasPrev {
+		prevName, _ := prevAnchor.Payload["name"].(string)
+		if prevName != "" {
+			anchorState["previous_anchor_name"] = prevName
+		}
+		anchorState["previous_anchor_entry_id"] = prevAnchor.ID
+		if prevUUID := AnchorUUIDFromEntry(prevAnchor); prevUUID != "" {
+			anchorState["previous_anchor_uuid"] = prevUUID
+		}
 	}
 	for k, v := range opts.AnchorState {
 		anchorState[k] = v
@@ -211,12 +231,27 @@ func (m *TapeManager) Compact(ctx context.Context, opts CompactOpts) ([]TapeEntr
 	if eventName == "" {
 		eventName = "compact"
 	}
-	event := NewEventEntry(eventName, map[string]any{
+	eventData := map[string]any{
 		"anchor":          name,
+		"anchor_uuid":     anchorUUID,
 		"summary_length":  len(summary),
 		"quality":         opts.Quality,
 		"skipped_summary": opts.SkipSummary,
-	})
+	}
+	if opts.TriggerReason != "" {
+		eventData["trigger_reason"] = opts.TriggerReason
+	}
+	if hasPrev {
+		prevName, _ := prevAnchor.Payload["name"].(string)
+		if prevName != "" {
+			eventData["previous_anchor_name"] = prevName
+		}
+		eventData["previous_anchor_entry_id"] = prevAnchor.ID
+		if prevUUID := AnchorUUIDFromEntry(prevAnchor); prevUUID != "" {
+			eventData["previous_anchor_uuid"] = prevUUID
+		}
+	}
+	event := NewEventEntry(eventName, eventData)
 	if err := m.Store.Append(opts.Tape, event); err != nil {
 		return nil, fmt.Errorf("append compact event: %w", err)
 	}
