@@ -377,3 +377,17 @@ func NewForkEntry(fromTape string, fromID int, toTape string, opts ...EntryOptio
 		"to_tape":   toTape,
 	}, opts...)
 }
+
+// NewForkAfterEntry records an after-anchor fork (copies entries with ID > afterID).
+func NewForkAfterEntry(fromTape string, afterID int, toTape string, meta map[string]any, opts ...EntryOption) TapeEntry {
+	payload := map[string]any{
+		"from_tape": fromTape,
+		"after_id":  afterID,
+		"to_tape":   toTape,
+		"mode":      "after",
+	}
+	for k, v := range meta {
+		payload[k] = v
+	}
+	return newEntry("fork", payload, opts...)
+}

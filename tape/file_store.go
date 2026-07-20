@@ -137,13 +137,16 @@ func (s *FileTapeStore) Reset(tape string) {
 		delete(s.files, tape)
 	}
 	delete(s.nextIDs, tape)
+	delete(s.tapeLocks, tape)
 	s.mu.Unlock()
 
 	path := s.tapePath(tape)
 	// Backup before reset (bub convention)
 	if _, err := os.Stat(path); err == nil {
 		bak := path + "." + time.Now().Format("20060102-150405") + ".bak"
-		os.Rename(path, bak)
+		if err := os.Rename(path, bak); err != nil {
+			_ = os.Remove(path)
+		}
 	}
 	_ = os.Remove(s.nextIDPath(tape))
 }
@@ -246,6 +249,18 @@ func applyFetchOpts(entries []TapeEntry, opts *FetchOpts) ([]TapeEntry, error) {
 		o.LastAnchor = false
 		o.AfterAnchor = ""
 		o.BetweenAnchors = [2]string{}
+		opts = &o
+	}
+	if opts != nil && opts.BeforeID > 0 {
+		var filtered []TapeEntry
+		for _, e := range entries {
+			if e.ID < opts.BeforeID {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+		o := *opts
+		o.BeforeID = 0
 		opts = &o
 	}
 	entries, err := applyAnchorSlicing(entries, opts)

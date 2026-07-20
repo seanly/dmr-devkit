@@ -583,3 +583,56 @@ func TestSQLiteFTS5DateFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestSQLiteResetWithFTS5(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := NewSQLiteTapeStore(dbPath, SQLiteStoreConfig{
+		EnableFTS5: config.FTS5True,
+	})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	tapeName := "feishu:p2p:oc_test:world"
+	if err := store.Append(tapeName, NewMessageEntry(map[string]any{
+		"role":    "user",
+		"content": "hello searchable world",
+	})); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := store.Append(tapeName, NewMessageEntry(map[string]any{
+		"role":    "user",
+		"content": "second line",
+	})); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	before := store.ListTapes()
+	if len(before) != 1 || before[0] != tapeName {
+		t.Fatalf("before reset ListTapes = %v, want [%q]", before, tapeName)
+	}
+
+	store.Reset(tapeName)
+
+	if got := store.ListTapes(); len(got) != 0 {
+		t.Fatalf("after reset ListTapes = %v, want empty", got)
+	}
+	entries, err := store.FetchAll(tapeName, nil)
+	if err != nil {
+		t.Fatalf("FetchAll after reset: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("after reset FetchAll len = %d, want 0", len(entries))
+	}
+
+	var ftsCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM entries_fts").Scan(&ftsCount); err != nil {
+		t.Fatalf("count fts: %v", err)
+	}
+	if ftsCount != 0 {
+		t.Fatalf("orphan fts rows = %d, want 0", ftsCount)
+	}
+}

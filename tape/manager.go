@@ -432,6 +432,42 @@ func (tc *TapeController) Fork(fromTape string, fromID int, toTape string) error
 	return nil
 }
 
+// ForkAfter copies entries with ID > afterID from fromTape into toTape, writes
+// session/start with startState, then records a fork audit entry.
+func (tc *TapeController) ForkAfter(fromTape string, afterID int, toTape string, startState map[string]any) error {
+	if startState == nil {
+		startState = map[string]any{}
+	}
+	if _, err := tc.Manager.Handoff(toTape, "session/start", startState); err != nil {
+		return fmt.Errorf("bootstrap fork tape: %w", err)
+	}
+
+	entries, err := tc.Manager.Store.FetchAll(fromTape, nil)
+	if err != nil {
+		return fmt.Errorf("fetch source tape: %w", err)
+	}
+
+	for _, e := range entries {
+		if e.ID <= afterID {
+			continue
+		}
+		copyEntry := e
+		copyEntry.ID = 0
+		if err := tc.Manager.Store.Append(toTape, copyEntry); err != nil {
+			return fmt.Errorf("append forked entry: %w", err)
+		}
+	}
+
+	meta := map[string]any{}
+	if u, ok := startState["fork_anchor_uuid"].(string); ok && strings.TrimSpace(u) != "" {
+		meta["anchor_uuid"] = strings.TrimSpace(u)
+	}
+	if err := tc.Manager.Store.Append(toTape, NewForkAfterEntry(fromTape, afterID, toTape, meta)); err != nil {
+		return fmt.Errorf("append fork entry: %w", err)
+	}
+	return nil
+}
+
 // CatchUp streams entries with ID > afterID from tape to the handler.
 func (tc *TapeController) CatchUp(tape string, afterID int, handler func(TapeEntry) error) error {
 	entries, err := tc.Manager.Store.FetchAll(tape, nil)

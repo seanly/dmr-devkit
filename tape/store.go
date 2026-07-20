@@ -22,12 +22,14 @@ type FetchOpts struct {
 	BetweenAnchors [2]string // [start, end]
 	// AfterID, if > 0, keeps only entries with ID strictly greater than AfterID (tape row id).
 	// When set, anchor-based fields above are ignored by stores that branch on FetchAll.
+	// BeforeID, if > 0, keeps only entries with ID strictly less than BeforeID.
 	StartDate string
 	EndDate   string
 	TextQuery string
 	Kinds     []string
 	Limit     int
 	AfterID   int
+	BeforeID  int
 }
 
 // InMemoryTapeStore implements TapeStore using an in-memory map.

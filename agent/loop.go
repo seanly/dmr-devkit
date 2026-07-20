@@ -153,12 +153,16 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 			Build()
 	}
 	if ir != nil {
-		if err := a.tape.AppendEntry(tapeName, tape.NewEventEntry("command", map[string]any{
+		appendTape := tapeName
+		if st := strings.TrimSpace(ir.SwitchTape); st != "" {
+			appendTape = st
+		}
+		if err := a.tape.AppendEntry(appendTape, tape.NewEventEntry("command", map[string]any{
 			"raw":    prompt,
 			"output": ir.Output,
 			"status": "ok",
 		})); err != nil {
-			slog.Warn("tape append failed", "tape", tapeName, "error", err)
+			slog.Warn("tape append failed", "tape", appendTape, "error", err)
 		}
 		return &Result{Output: ir.Output, Steps: 0, SwitchTape: ir.SwitchTape, Quit: ir.Quit, ClearScreen: ir.ClearScreen}, 0, nil
 	}

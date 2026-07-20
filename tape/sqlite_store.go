@@ -318,7 +318,28 @@ func (s *SQLiteTapeStore) ListTapes() []string {
 func (s *SQLiteTapeStore) Reset(tape string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.db.Exec("DELETE FROM entries WHERE tape = ?", tape)
+	s.resetTapeEntriesLocked(tape)
+}
+
+// resetTapeEntriesLocked removes all entries for a tape. When FTS5 is enabled,
+// the entries_fts_ad trigger issues FTS5 'delete' commands that fail under
+// modernc.org/sqlite (SQL logic error), so we drop the trigger for the bulk
+// delete, prune orphaned FTS rows, then recreate the trigger.
+func (s *SQLiteTapeStore) resetTapeEntriesLocked(tape string) {
+	if s.useFTS5.Load() {
+		_, _ = s.db.Exec(`DROP TRIGGER IF EXISTS entries_fts_ad`)
+	}
+	if _, err := s.db.Exec("DELETE FROM entries WHERE tape = ?", tape); err != nil {
+		slog.Warn("sqlite tape reset failed", "tape", tape, "error", err)
+		return
+	}
+	if s.useFTS5.Load() {
+		_, _ = s.db.Exec(`DELETE FROM entries_fts WHERE rowid NOT IN (SELECT id FROM entries)`)
+		_, err := s.db.Exec(`CREATE TRIGGER IF NOT EXISTS entries_fts_ad AFTER DELETE ON entries BEGIN INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.id, COALESCE(old.payload, '') || ' ' || COALESCE(old.meta, '')); END;`)
+		if err != nil {
+			slog.Warn("sqlite tape: recreate fts delete trigger failed", "error", err)
+		}
+	}
 }
 
 func (s *SQLiteTapeStore) Append(tape string, entry TapeEntry) error {
