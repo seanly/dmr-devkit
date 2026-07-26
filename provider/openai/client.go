@@ -489,7 +489,7 @@ func convertTools(tools []map[string]any) []goopenai.Tool {
 		}
 		name, _ := fn["name"].(string)
 		desc, _ := fn["description"].(string)
-		params := fn["parameters"]
+		params := normalizeToolParams(fn["parameters"])
 
 		tool := goopenai.Tool{
 			Type: goopenai.ToolTypeFunction,
