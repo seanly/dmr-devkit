@@ -152,6 +152,11 @@ func (s *FileTapeStore) Reset(tape string) {
 }
 
 func (s *FileTapeStore) Append(tape string, entry TapeEntry) error {
+	_, err := s.AppendEntry(tape, entry)
+	return err
+}
+
+func (s *FileTapeStore) AppendEntry(tape string, entry TapeEntry) (int, error) {
 	mu := s.lockForTape(tape)
 	mu.Lock()
 	defer mu.Unlock()
@@ -160,7 +165,7 @@ func (s *FileTapeStore) Append(tape string, entry TapeEntry) error {
 	f, err := s.getFile(tape)
 	if err != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("open tape %q: %w", tape, err)
+		return 0, fmt.Errorf("open tape %q: %w", tape, err)
 	}
 
 	id := s.nextIDs[tape] + 1
@@ -174,20 +179,20 @@ func (s *FileTapeStore) Append(tape string, entry TapeEntry) error {
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return fmt.Errorf("marshal entry: %w", err)
+		return 0, fmt.Errorf("marshal entry: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("write tape %q: %w", tape, err)
+		return 0, fmt.Errorf("write tape %q: %w", tape, err)
 	}
 	if _, err := f.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write tape %q newline: %w", tape, err)
+		return 0, fmt.Errorf("write tape %q newline: %w", tape, err)
 	}
 	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync tape %q: %w", tape, err)
+		return 0, fmt.Errorf("sync tape %q: %w", tape, err)
 	}
 	// Persist nextID to sidecar
 	_ = os.WriteFile(s.nextIDPath(tape), []byte(strconv.Itoa(id)+"\n"), 0o600)
-	return nil
+	return id, nil
 }
 
 func (s *FileTapeStore) FetchAll(tape string, opts *FetchOpts) ([]TapeEntry, error) {
@@ -270,7 +275,13 @@ func applyFetchOpts(entries []TapeEntry, opts *FetchOpts) ([]TapeEntry, error) {
 	entries = applyDateFilter(entries, opts)
 	entries = applyTextQuery(entries, opts)
 	entries = applyKindFilter(entries, opts)
-	if opts.Limit > 0 && len(entries) > opts.Limit {
+	entries = applyEventNameFilter(entries, opts)
+	if opts != nil && opts.Reverse {
+		for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+			entries[i], entries[j] = entries[j], entries[i]
+		}
+	}
+	if opts != nil && opts.Limit > 0 && len(entries) > opts.Limit {
 		entries = entries[:opts.Limit]
 	}
 	return entries, nil

@@ -176,13 +176,18 @@ func (s *PGTapeStore) Reset(tape string) {
 }
 
 func (s *PGTapeStore) Append(tape string, entry TapeEntry) error {
+	_, err := s.AppendEntry(tape, entry)
+	return err
+}
+
+func (s *PGTapeStore) AppendEntry(tape string, entry TapeEntry) (int, error) {
 	payloadJSON, err := json.Marshal(entry.Payload)
 	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
 	metaJSON, err := json.Marshal(entry.Meta)
 	if err != nil {
-		return fmt.Errorf("marshal meta: %w", err)
+		return 0, fmt.Errorf("marshal meta: %w", err)
 	}
 	if entry.Meta == nil {
 		metaJSON = []byte("{}")
@@ -207,10 +212,10 @@ func (s *PGTapeStore) Append(tape string, entry TapeEntry) error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("insert entry: %w", err)
+		return 0, fmt.Errorf("insert entry: %w", err)
 	}
 	entry.ID = id
-	return nil
+	return id, nil
 }
 
 func (s *PGTapeStore) FetchAll(tape string, opts *FetchOpts) ([]TapeEntry, error) {
@@ -352,9 +357,18 @@ func (s *PGTapeStore) fetchFiltered(tape string, opts *FetchOpts) ([]TapeEntry, 
 				argIdx += 2
 			}
 		}
+		if opts.EventName != "" {
+			where = append(where, fmt.Sprintf("payload->>'name' = $%d", argIdx))
+			args = append(args, opts.EventName)
+			argIdx++
+		}
 	}
 
-	query := "SELECT id, kind, payload, meta, date FROM entries WHERE " + strings.Join(where, " AND ") + " ORDER BY id"
+	order := "id"
+	if opts != nil && opts.Reverse {
+		order = "id DESC"
+	}
+	query := "SELECT id, kind, payload, meta, date FROM entries WHERE " + strings.Join(where, " AND ") + " ORDER BY " + order
 	if opts != nil && opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", opts.Limit)
 	}

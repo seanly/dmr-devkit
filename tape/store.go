@@ -30,6 +30,10 @@ type FetchOpts struct {
 	Limit     int
 	AfterID   int
 	BeforeID  int
+	// Reverse returns entries newest-first (highest ID first).
+	Reverse bool
+	// EventName filters event entries to those whose payload["name"] matches.
+	EventName string
 }
 
 // InMemoryTapeStore implements TapeStore using an in-memory map.
@@ -64,13 +68,18 @@ func (s *InMemoryTapeStore) Reset(tape string) {
 }
 
 func (s *InMemoryTapeStore) Append(tape string, entry TapeEntry) error {
+	_, err := s.AppendEntry(tape, entry)
+	return err
+}
+
+func (s *InMemoryTapeStore) AppendEntry(tape string, entry TapeEntry) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := s.nextIDs[tape]
 	s.nextIDs[tape] = id + 1
 	entry.ID = id
 	s.tapes[tape] = append(s.tapes[tape], entry)
-	return nil
+	return id, nil
 }
 
 func (s *InMemoryTapeStore) FetchAll(tape string, opts *FetchOpts) ([]TapeEntry, error) {
@@ -220,6 +229,23 @@ func applyKindFilter(entries []TapeEntry, opts *FetchOpts) []TapeEntry {
 	var filtered []TapeEntry
 	for _, e := range entries {
 		if kindSet[e.Kind] {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
+func applyEventNameFilter(entries []TapeEntry, opts *FetchOpts) []TapeEntry {
+	if opts == nil || opts.EventName == "" {
+		return entries
+	}
+	var filtered []TapeEntry
+	for _, e := range entries {
+		if e.Kind != "event" {
+			continue
+		}
+		name, _ := e.Payload["name"].(string)
+		if name == opts.EventName {
 			filtered = append(filtered, e)
 		}
 	}

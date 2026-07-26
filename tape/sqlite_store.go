@@ -343,16 +343,21 @@ func (s *SQLiteTapeStore) resetTapeEntriesLocked(tape string) {
 }
 
 func (s *SQLiteTapeStore) Append(tape string, entry TapeEntry) error {
+	_, err := s.AppendEntry(tape, entry)
+	return err
+}
+
+func (s *SQLiteTapeStore) AppendEntry(tape string, entry TapeEntry) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	payloadJSON, err := json.Marshal(entry.Payload)
 	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
 	metaJSON, err := json.Marshal(entry.Meta)
 	if err != nil {
-		return fmt.Errorf("marshal meta: %w", err)
+		return 0, fmt.Errorf("marshal meta: %w", err)
 	}
 	if entry.Meta == nil {
 		metaJSON = []byte("{}")
@@ -373,17 +378,18 @@ func (s *SQLiteTapeStore) Append(tape string, entry TapeEntry) error {
 			break
 		}
 		if !strings.Contains(err.Error(), "database is locked") {
-			return fmt.Errorf("insert entry: %w", err)
+			return 0, fmt.Errorf("insert entry: %w", err)
 		}
 		slog.Debug("sqlite tape: insert busy, retrying", "attempt", i+1, "error", err)
 	}
 	if err != nil {
-		return fmt.Errorf("insert entry: %w", err)
+		return 0, fmt.Errorf("insert entry: %w", err)
 	}
 	if id, idErr := result.LastInsertId(); idErr == nil {
 		entry.ID = int(id)
+		return int(id), nil
 	}
-	return nil
+	return 0, nil
 }
 
 func (s *SQLiteTapeStore) FetchAll(tape string, opts *FetchOpts) ([]TapeEntry, error) {
@@ -477,9 +483,17 @@ func (s *SQLiteTapeStore) fetchWithLike(tape string, opts *FetchOpts) ([]TapeEnt
 			q := "%" + opts.TextQuery + "%"
 			args = append(args, q, q)
 		}
+		if opts.EventName != "" {
+			where = append(where, "json_extract(payload, '$.name') = ?")
+			args = append(args, opts.EventName)
+		}
 	}
 
-	query := "SELECT id, kind, payload, meta, date FROM entries WHERE " + strings.Join(where, " AND ") + " ORDER BY id"
+	order := "id"
+	if opts != nil && opts.Reverse {
+		order = "id DESC"
+	}
+	query := "SELECT id, kind, payload, meta, date FROM entries WHERE " + strings.Join(where, " AND ") + " ORDER BY " + order
 	if opts != nil && opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", opts.Limit)
 	}
@@ -533,12 +547,21 @@ func (s *SQLiteTapeStore) fetchWithFTS5(tape string, opts *FetchOpts) ([]TapeEnt
 		where = append(where, "e.kind IN ("+strings.Join(placeholders, ",")+")")
 	}
 
+	if opts.EventName != "" {
+		where = append(where, "json_extract(e.payload, '$.name') = ?")
+		args = append(args, opts.EventName)
+	}
+
+	order := "e.id"
+	if opts != nil && opts.Reverse {
+		order = "e.id DESC"
+	}
 	sql := `SELECT e.id, e.kind, e.payload, e.meta, e.date
 		FROM entries e
 		JOIN entries_fts f ON e.id = f.rowid
 		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY e.id`
-	if opts.Limit > 0 {
+		ORDER BY ` + order
+	if opts != nil && opts.Limit > 0 {
 		sql += fmt.Sprintf(" LIMIT %d", opts.Limit)
 	}
 
@@ -790,6 +813,24 @@ func applyPostFilters(entries []TapeEntry, opts *FetchOpts) []TapeEntry {
 			}
 		}
 		entries = filtered
+	}
+	if opts.EventName != "" {
+		var filtered []TapeEntry
+		for _, e := range entries {
+			if e.Kind != "event" {
+				continue
+			}
+			name, _ := e.Payload["name"].(string)
+			if name == opts.EventName {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
+	if opts.Reverse {
+		for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+			entries[i], entries[j] = entries[j], entries[i]
+		}
 	}
 	if opts.Limit > 0 && len(entries) > opts.Limit {
 		entries = entries[:opts.Limit]
