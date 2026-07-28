@@ -392,6 +392,30 @@ func (a *Agent) SwitchModel(tapeName, modelName string) error {
 	return nil
 }
 
+// ClearModelOverride removes the persisted per-tape model switch (,model.switch /
+// /model.switch) and reverts to config default, or to a TapeModels match in memory
+// when configured. Returns the previous override (empty if none) and the model name
+// now in effect.
+func (a *Agent) ClearModelOverride(tapeName string) (previousOverride, currentName string) {
+	ts := a.tapeStates.getOrCreate(tapeName)
+	ts.mu.Lock()
+	previousOverride = ts.modelOverride
+	ts.modelOverride = ""
+	ts.chatClient = nil
+	ts.mu.Unlock()
+
+	a.persistTapeState(tapeName)
+
+	if modelName := a.modelNameForTape(tapeName); modelName != "" {
+		_ = a.switchModel(tapeName, modelName)
+	}
+
+	if m := a.GetCurrentModel(tapeName); m != nil {
+		currentName = m.Name
+	}
+	return previousOverride, currentName
+}
+
 const maxChatClients = 100
 const maxToolsCache = 100
 
@@ -889,6 +913,13 @@ func (a *Agent) ClearDiscoveredTools(tapeName string) {
 	a.clearDiscoveredToolsWithReason(tapeName, "handoff")
 }
 
+// ClearAllDiscoveredTools removes every discovered extended/MCP tool for the
+// tape, persists agent_state, and returns how many names were cleared.
+// Core tools are unaffected. Use for explicit user resets (e.g. /tools.clear).
+func (a *Agent) ClearAllDiscoveredTools(tapeName string) int {
+	return a.clearAllDiscoveredTools(tapeName)
+}
+
 // clearDiscoveredToolsWithReason performs the actual selective clearing and is
 // shared by Handoff and compact paths.
 func (a *Agent) clearDiscoveredToolsWithReason(tapeName, reason string) {
@@ -972,7 +1003,7 @@ func (a *Agent) clearDiscoveredToolsWithReason(tapeName, reason string) {
 }
 
 // clearAllDiscoveredTools clears every discovered tool for the tape.
-func (a *Agent) clearAllDiscoveredTools(tapeName string) {
+func (a *Agent) clearAllDiscoveredTools(tapeName string) int {
 	ts := a.tapeStates.getOrCreate(tapeName)
 	ts.mu.Lock()
 	count := len(ts.discoveredTools)
@@ -986,20 +1017,15 @@ func (a *Agent) clearAllDiscoveredTools(tapeName string) {
 
 	_ = a.hooks.OnDiscoveredToolsCleared(context.Background(), tapeName)
 	a.persistTapeState(tapeName)
+	return count
 }
 
 // toolPersistencePolicy returns the effective tool persistence policy.
-// The new default (no configuration) preserves discovered extended/MCP tools
-// across compacts so the model does not lose capabilities, while dropping
-// tools explicitly marked Ephemeral. Set [agent.tool_persistence] to override;
-// clear_on_compact=true restores the legacy full-clear.
+// Default: clear all discovered tools on handoff and cap selective retains at
+// 30 names. Set [agent.tool_persistence] to override (e.g. clear_on_compact=false
+// with keep_extended=true to preserve capabilities across phases).
 func (a *Agent) toolPersistencePolicy() config.ToolPersistenceConfig {
-	keep := true
-	policy := config.ToolPersistenceConfig{
-		ClearOnCompact: nil, // nil means "use selective keep rules"
-		KeepExtended:   &keep,
-		KeepMCP:        &keep,
-	}
+	policy := config.DefaultToolPersistenceConfig()
 	cfg := a.config.AgentPolicy.ToolPersistence
 	if cfg == nil {
 		return policy

@@ -50,7 +50,13 @@ type RuntimeAgent interface {
 	AllModelInfos() []ModelInfo
 	GetCurrentModelName(tapeName string) (name, model string)
 	SwitchModel(tapeName, modelName string) error
+	// ClearModelOverride drops a persisted ,model.switch override for the tape and
+	// returns the previous override (empty if none) and the config-resolved model name now in effect.
+	ClearModelOverride(tapeName string) (previousOverride, currentName string)
 	CompactTape(ctx context.Context, tapeName string) (summary string, err error)
+	// ClearAllDiscoveredTools drops every toolSearch-discovered extended/MCP tool
+	// for the tape and returns how many names were cleared.
+	ClearAllDiscoveredTools(tapeName string) int
 	RestartProcess() error
 
 	// Agent execution (used by cli plugin)

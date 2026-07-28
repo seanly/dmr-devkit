@@ -134,6 +134,35 @@ func TestRestoreTapeState_ModelOverride(t *testing.T) {
 	}
 }
 
+func TestClearModelOverride(t *testing.T) {
+	models := []config.ModelConfig{
+		{Name: "fast", Model: "gpt-4o-mini", Default: true, APIKey: "k"},
+		{Name: "smart", Model: "gpt-4o", APIKey: "k"},
+	}
+	store := tape.NewInMemoryTapeStore()
+	tm := tape.NewTapeManager(store)
+	a := New(nil, tm, nil, Config{Models: models})
+
+	if err := a.SwitchModel("tape1", "smart"); err != nil {
+		t.Fatalf("SwitchModel: %v", err)
+	}
+
+	prev, current := a.ClearModelOverride("tape1")
+	if prev != "smart" {
+		t.Errorf("previous override = %q, want smart", prev)
+	}
+	if current != "fast" {
+		t.Errorf("current model = %q, want fast", current)
+	}
+
+	a2 := New(nil, tm, nil, Config{Models: models})
+	a2.restoreTapeState("tape1")
+	m := a2.GetCurrentModel("tape1")
+	if m == nil || m.Name != "fast" {
+		t.Errorf("restored model after clear = %v, want fast", m)
+	}
+}
+
 func TestSwitchModel_PersistsAgentState(t *testing.T) {
 	models := []config.ModelConfig{
 		{Name: "fast", Model: "gpt-4o-mini", Default: true, APIKey: "k"},

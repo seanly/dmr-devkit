@@ -277,8 +277,7 @@ func TestToolDiscovery(t *testing.T) {
 	}
 }
 
-func TestToolPersistence_PreservesNonEphemeral(t *testing.T) {
-	// Register extended and MCP tools directly in the agent cache.
+func TestToolPersistence_DefaultClearsOnHandoff(t *testing.T) {
 	a := New(nil, nil, nil, Config{})
 	a.extendedTools = []*tool.Tool{
 		{Spec: tool.ToolSpec{Name: "ext1", Group: tool.ToolGroupExtended}},
@@ -289,13 +288,40 @@ func TestToolPersistence_PreservesNonEphemeral(t *testing.T) {
 	a.DiscoverTool("tape1", "ext1")
 	a.DiscoverTool("tape1", "mcp1")
 
-	// Default policy preserves extended/MCP tools.
+	a.clearDiscoveredToolsWithReason("tape1", "handoff")
+	if a.IsToolDiscovered("tape1", "ext1") {
+		t.Error("ext1 should be cleared by default clear_on_compact")
+	}
+	if a.IsToolDiscovered("tape1", "mcp1") {
+		t.Error("mcp1 should be cleared by default clear_on_compact")
+	}
+}
+
+func TestToolPersistence_PreservesWhenConfigured(t *testing.T) {
+	clear := false
+	keep := true
+	a := New(nil, nil, nil, Config{AgentPolicy: config.AgentConfig{
+		ToolPersistence: &config.ToolPersistenceConfig{
+			ClearOnCompact: &clear,
+			KeepExtended:   &keep,
+			KeepMCP:        &keep,
+		},
+	}})
+	a.extendedTools = []*tool.Tool{
+		{Spec: tool.ToolSpec{Name: "ext1", Group: tool.ToolGroupExtended}},
+		{Spec: tool.ToolSpec{Name: "mcp1", Group: tool.ToolGroupMCP}},
+	}
+	a.extLoaded = true
+
+	a.DiscoverTool("tape1", "ext1")
+	a.DiscoverTool("tape1", "mcp1")
+
 	a.clearDiscoveredToolsWithReason("tape1", "compact")
 	if !a.IsToolDiscovered("tape1", "ext1") {
-		t.Error("ext1 should be preserved by default")
+		t.Error("ext1 should be preserved when keep_extended=true")
 	}
 	if !a.IsToolDiscovered("tape1", "mcp1") {
-		t.Error("mcp1 should be preserved by default")
+		t.Error("mcp1 should be preserved when keep_mcp=true")
 	}
 }
 
@@ -311,11 +337,11 @@ func TestToolPersistence_ClearsEphemeral(t *testing.T) {
 	a.DiscoverTool("tape1", "extTmp")
 
 	a.clearDiscoveredToolsWithReason("tape1", "compact")
-	if !a.IsToolDiscovered("tape1", "ext1") {
-		t.Error("non-ephemeral ext1 should be preserved")
+	if a.IsToolDiscovered("tape1", "ext1") {
+		t.Error("ext1 should be cleared by default clear_on_compact")
 	}
 	if a.IsToolDiscovered("tape1", "extTmp") {
-		t.Error("ephemeral extTmp should be cleared")
+		t.Error("extTmp should be cleared by default clear_on_compact")
 	}
 }
 

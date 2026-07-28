@@ -25,7 +25,9 @@ type mockRuntimeAgent struct {
 func (m *mockRuntimeAgent) AllModelInfos() []agent.ModelInfo                            { return nil }
 func (m *mockRuntimeAgent) GetCurrentModelName(string) (string, string)                 { return "", "" }
 func (m *mockRuntimeAgent) SwitchModel(string, string) error                            { return nil }
+func (m *mockRuntimeAgent) ClearModelOverride(string) (string, string)                  { return "", "" }
 func (m *mockRuntimeAgent) CompactTape(context.Context, string) (string, error) { return "", nil }
+func (m *mockRuntimeAgent) ClearAllDiscoveredTools(string) int                  { return 0 }
 func (m *mockRuntimeAgent) RestartProcess() error                             { return nil }
 func (m *mockRuntimeAgent) Run(context.Context, string, string, int32) (*agent.RunResult, error) {
 	return nil, nil

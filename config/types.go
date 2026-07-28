@@ -510,12 +510,23 @@ func (h HandoffConfig) StateEnabledOrDefault() bool {
 	return true
 }
 
+// DefaultToolPersistenceConfig returns defaults for discovered extended/MCP tools.
+// Handoff clears all discovered tools; max_discovered_tools caps selective clears when
+// callers override clear_on_compact.
+func DefaultToolPersistenceConfig() ToolPersistenceConfig {
+	clear := true
+	return ToolPersistenceConfig{
+		ClearOnCompact:     &clear,
+		MaxDiscoveredTools: 30,
+	}
+}
+
 // DefaultHandoffConfig returns harness defaults.
 func DefaultHandoffConfig() HandoffConfig {
 	enabled := true
 	return HandoffConfig{
 		StateEnabled:          &enabled,
-		CompactAfterState:     true,
+		CompactAfterState:     false, // prefer anchor handoff so Handoff() runs and tool persistence applies
 		CompactRequired:       false,
 		StateUpdate:           "llm_extract",
 		MaxArtifacts:          20,
