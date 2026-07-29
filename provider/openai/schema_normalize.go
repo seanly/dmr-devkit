@@ -6,9 +6,13 @@ package openai
 // when a node has both type and anyOf/oneOf, type is moved into each branch.
 func normalizeToolParams(params any) any {
 	if params == nil {
-		return nil
+		return map[string]any{"type": "object", "properties": map[string]any{}}
 	}
-	return normalizeToolSchema(params)
+	out := normalizeToolSchema(params)
+	if m, ok := out.(map[string]any); ok {
+		ensureObjectType(m)
+	}
+	return out
 }
 
 func normalizeToolSchema(v any) any {
@@ -43,9 +47,6 @@ func pushTypeIntoUnionBranches(schema map[string]any) {
 		}
 
 		parentType, hasParentType := schema["type"]
-		if hasParentType {
-			delete(schema, "type")
-		}
 
 		for _, item := range items {
 			m, ok := item.(map[string]any)
@@ -78,6 +79,17 @@ func hasUnion(schema map[string]any) bool {
 // {"type":"object","properties":...,"anyOf":[{"required":["name"]},...]}
 // after the parent type has already been stripped, or when the parent never
 // had type but clearly describes an object.
+// ensureObjectType adds type:"object" when the schema clearly describes an object
+// but omits type (common in external plugin tool defs).
+func ensureObjectType(schema map[string]any) {
+	if _, ok := schema["type"]; ok {
+		return
+	}
+	if _, ok := schema["properties"]; ok {
+		schema["type"] = "object"
+	}
+}
+
 func shouldDefaultUnionItemToObject(parent, item map[string]any) bool {
 	if _, ok := parent["properties"]; ok {
 		return true

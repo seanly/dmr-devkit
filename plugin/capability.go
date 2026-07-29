@@ -22,7 +22,8 @@ const (
 	CapInterceptor     Capability = "interceptor"  // InterceptInput
 	CapLifecycle       Capability = "lifecycle"    // AfterAgentRun / DiscoveredToolsCleared
 	CapHTTP            Capability = "http"         // HTTP endpoint provider
-	CapContextReset    Capability = "context-reset" // OnContextReset
+	CapContextReset         Capability = "context-reset" // OnContextReset
+	CapToolResultSanitizer  Capability = "tool-result-sanitizer"
 )
 
 // CapabilitySet returns all known capability constants as a slice.
@@ -37,6 +38,7 @@ func CapabilitySet() []Capability {
 		CapLifecycle,
 		CapHTTP,
 		CapContextReset,
+		CapToolResultSanitizer,
 	}
 }
 
@@ -56,6 +58,12 @@ type SystemPromptProvider interface {
 	// SystemPrompt returns a prompt fragment for the given base prompt.
 	// Empty string means no contribution.
 	SystemPrompt(ctx context.Context, base string) (string, error)
+}
+
+// ToolResultSanitizer is implemented by plugins that redact sensitive data from
+// tool handler output before it is recorded or sent to the LLM.
+type ToolResultSanitizer interface {
+	SanitizeToolResult(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
 }
 
 // PolicyChecker is implemented by plugins that enforce policy before tool calls.
@@ -159,6 +167,9 @@ func InferCapabilities(p Plugin) []Capability {
 	}
 	if _, ok := p.(ContextResetHandler); ok {
 		caps = append(caps, CapContextReset)
+	}
+	if _, ok := p.(ToolResultSanitizer); ok {
+		caps = append(caps, CapToolResultSanitizer)
 	}
 	return caps
 }

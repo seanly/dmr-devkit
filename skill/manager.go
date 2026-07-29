@@ -128,6 +128,11 @@ func (m *Manager) BatchBeforeToolCall(context.Context, []tool.BatchCheckItem) ma
 	return nil
 }
 
+// SanitizeToolResult implements agent.Hooks.
+func (m *Manager) SanitizeToolResult(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
 // AfterToolRound implements agent.Hooks.
 func (m *Manager) AfterToolRound(context.Context, agent.AfterToolRoundArgs) error { return nil }
 

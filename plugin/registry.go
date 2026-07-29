@@ -238,6 +238,19 @@ func (r *Registry) ContextResetHandlers() []ContextResetHandler {
 	return out
 }
 
+// ToolResultSanitizers returns all registered plugins that implement ToolResultSanitizer.
+func (r *Registry) ToolResultSanitizers() []ToolResultSanitizer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []ToolResultSanitizer
+	for _, p := range r.pluginsForCap(CapToolResultSanitizer) {
+		if pp, ok := p.(ToolResultSanitizer); ok {
+			out = append(out, pp)
+		}
+	}
+	return out
+}
+
 // HTTPProviders returns all registered plugins that implement HTTPProvider.
 func (r *Registry) HTTPProviders() []HTTPProvider {
 	r.mu.RLock()

@@ -23,8 +23,8 @@ func TestNormalizeToolParams_VsphereStyleRootAnyOf(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected map, got %T", normalizeToolParams(in))
 	}
-	if _, has := out["type"]; has {
-		t.Fatalf("parent type should be removed, got %#v", out["type"])
+	if typ, _ := out["type"].(string); typ != "object" {
+		t.Fatalf("parent type should remain object, got %#v", out["type"])
 	}
 	items, ok := out["anyOf"].([]any)
 	if !ok || len(items) != 2 {
@@ -65,19 +65,29 @@ func TestNormalizeToolParams_NestedAnyOf(t *testing.T) {
 		},
 	}
 	out := normalizeToolParams(in).(map[string]any)
-	if _, has := out["type"]; has {
-		t.Fatal("root type should be stripped")
+	if typ, _ := out["type"].(string); typ != "object" {
+		t.Fatalf("root type should remain object, got %v", out["type"])
 	}
 	outer := out["anyOf"].([]any)
 	nested := outer[0].(map[string]any)
-	if _, has := nested["type"]; has {
-		t.Fatal("middle type should be pushed into nested anyOf, not left on union parent")
+	if typ, _ := nested["type"].(string); typ != "object" {
+		t.Fatalf("middle type should remain object, got %v", nested["type"])
 	}
 	inner := nested["anyOf"].([]any)
 	for i, item := range inner {
 		if typ, _ := item.(map[string]any)["type"].(string); typ != "object" {
 			t.Fatalf("nested item[%d].type = %v", i, item.(map[string]any)["type"])
 		}
+	}
+}
+
+func TestNormalizeToolParams_NilDefaultsToObject(t *testing.T) {
+	out, ok := normalizeToolParams(nil).(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", normalizeToolParams(nil))
+	}
+	if out["type"] != "object" {
+		t.Fatalf("type = %v, want object", out["type"])
 	}
 }
 
@@ -133,8 +143,8 @@ func TestBuildRequest_NormalizesToolsForAllProviders(t *testing.T) {
 			if !ok {
 				t.Fatalf("parameters type %T", goReq.Tools[0].Function.Parameters)
 			}
-			if _, has := got["type"]; has {
-				t.Fatalf("expected parent type stripped, got %#v", got)
+			if got["type"] != "object" {
+				t.Fatalf("expected parent type object, got %#v", got["type"])
 			}
 			item := got["anyOf"].([]any)[0].(map[string]any)
 			if item["type"] != "object" {

@@ -180,6 +180,23 @@ func (h *RegistryHooks) BatchBeforeToolCall(ctx context.Context, items []tool.Ba
 	return nil
 }
 
+// SanitizeToolResult chains all ToolResultSanitizers in registration order.
+func (h *RegistryHooks) SanitizeToolResult(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error) {
+	if h.registry == nil {
+		return result, nil
+	}
+	out := result
+	for _, s := range h.registry.ToolResultSanitizers() {
+		var err error
+		out, err = s.SanitizeToolResult(ctx, toolName, out, toolCtx)
+		if err != nil {
+			h.reportf("plugin %q SanitizeToolResult error: %w", s.(Plugin).Name(), err)
+			return result, err
+		}
+	}
+	return out, nil
+}
+
 func (h *RegistryHooks) AfterToolRound(ctx context.Context, args agent.AfterToolRoundArgs) error {
 	return nil
 }

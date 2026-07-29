@@ -230,6 +230,9 @@ func wireExecutor(hooks agent.Hooks, verbose int) *tool.ToolExecutor {
 	ex.BatchBeforeToolCall = func(ctx context.Context, items []tool.BatchCheckItem) map[int]error {
 		return hooks.BatchBeforeToolCall(ctx, items)
 	}
+	ex.SanitizeToolResult = func(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error) {
+		return hooks.SanitizeToolResult(ctx, toolName, result, toolCtx)
+	}
 	return ex
 }
 
