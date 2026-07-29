@@ -26,6 +26,9 @@ type ApprovalRequest struct {
 	// Tape is an optional routing/context hint for external approvers.
 	// It typically equals the tool context's tape name (toolCtx.Tape).
 	Tape string
+	// Context carries optional channel/session metadata from the agent run
+	// (e.g. chat_id, sender_id from Feishu contextJSON).
+	Context map[string]any
 }
 
 // ApprovalResult is the outcome of an approval request.
