@@ -233,6 +233,9 @@ func wireExecutor(hooks agent.Hooks, verbose int) *tool.ToolExecutor {
 	ex.SanitizeToolResult = func(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error) {
 		return hooks.SanitizeToolResult(ctx, toolName, result, toolCtx)
 	}
+	ex.SanitizeToolLog = func(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error) {
+		return hooks.SanitizeToolLog(ctx, toolName, result, toolCtx)
+	}
 	return ex
 }
 

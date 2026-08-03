@@ -251,6 +251,32 @@ func (r *Registry) ToolResultSanitizers() []ToolResultSanitizer {
 	return out
 }
 
+// ToolLogSanitizers returns all registered plugins that implement ToolLogSanitizer.
+func (r *Registry) ToolLogSanitizers() []ToolLogSanitizer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []ToolLogSanitizer
+	for _, p := range r.pluginsForCap(CapToolLogSanitizer) {
+		if pp, ok := p.(ToolLogSanitizer); ok {
+			out = append(out, pp)
+		}
+	}
+	return out
+}
+
+// ToolAuditSanitizers returns all registered plugins that implement ToolAuditSanitizer.
+func (r *Registry) ToolAuditSanitizers() []ToolAuditSanitizer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []ToolAuditSanitizer
+	for _, p := range r.pluginsForCap(CapToolAuditSanitizer) {
+		if pp, ok := p.(ToolAuditSanitizer); ok {
+			out = append(out, pp)
+		}
+	}
+	return out
+}
+
 // HTTPProviders returns all registered plugins that implement HTTPProvider.
 func (r *Registry) HTTPProviders() []HTTPProvider {
 	r.mu.RLock()

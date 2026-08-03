@@ -612,6 +612,15 @@ func (a *Agent) sessionMemoryForTape(tapeName string) *SessionMemory {
 	return ts.sessionMemory
 }
 
+// sanitizeToolAudit applies audit-target redaction for tape, UI, and stream hooks.
+func (a *Agent) sanitizeToolAudit(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) any {
+	out, err := a.hooks.SanitizeToolAudit(ctx, toolName, result, toolCtx)
+	if err != nil {
+		return result
+	}
+	return out
+}
+
 // recordTurnToSessionMemory extracts lightweight segments from the messages of
 // a completed turn and appends them to the tape's SessionMemory. It is a no-op
 // when SessionMemory is disabled.

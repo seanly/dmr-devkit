@@ -197,6 +197,40 @@ func (h *RegistryHooks) SanitizeToolResult(ctx context.Context, toolName string,
 	return out, nil
 }
 
+// SanitizeToolLog chains all ToolLogSanitizers in registration order.
+func (h *RegistryHooks) SanitizeToolLog(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error) {
+	if h.registry == nil {
+		return result, nil
+	}
+	out := result
+	for _, s := range h.registry.ToolLogSanitizers() {
+		var err error
+		out, err = s.SanitizeToolLog(ctx, toolName, out, toolCtx)
+		if err != nil {
+			h.reportf("plugin %q SanitizeToolLog error: %w", s.(Plugin).Name(), err)
+			return result, err
+		}
+	}
+	return out, nil
+}
+
+// SanitizeToolAudit chains all ToolAuditSanitizers in registration order.
+func (h *RegistryHooks) SanitizeToolAudit(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error) {
+	if h.registry == nil {
+		return result, nil
+	}
+	out := result
+	for _, s := range h.registry.ToolAuditSanitizers() {
+		var err error
+		out, err = s.SanitizeToolAudit(ctx, toolName, out, toolCtx)
+		if err != nil {
+			h.reportf("plugin %q SanitizeToolAudit error: %w", s.(Plugin).Name(), err)
+			return result, err
+		}
+	}
+	return out, nil
+}
+
 func (h *RegistryHooks) AfterToolRound(ctx context.Context, args agent.AfterToolRoundArgs) error {
 	return nil
 }

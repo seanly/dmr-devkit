@@ -36,6 +36,9 @@ type ToolExecutor struct {
 	BeforeToolCall      BeforeToolCallFunc
 	BatchBeforeToolCall BatchBeforeToolCallFunc
 	SanitizeToolResult  SanitizeToolResultFunc
+	// SanitizeToolLog optionally redacts verbose log output separately from ToolResults.
+	// When nil, logs fall back to SanitizeToolResult (if set), then raw handler output.
+	SanitizeToolLog SanitizeToolResultFunc
 	// Verbose mirrors config verbose: when >= 1, log each tool invocation (args + result, truncated by level).
 	Verbose int
 
@@ -61,15 +64,32 @@ func NewToolExecutor() *ToolExecutor {
 	}
 }
 
-func (e *ToolExecutor) sanitizeResult(toolCtx *ToolContext, toolName string, out any) (any, error) {
-	if e.SanitizeToolResult == nil {
-		return out, nil
-	}
+func (e *ToolExecutor) hookCtx(toolCtx *ToolContext) context.Context {
 	goCtx := context.Background()
 	if toolCtx != nil && toolCtx.Ctx != nil {
 		goCtx = toolCtx.Ctx
 	}
-	return e.SanitizeToolResult(goCtx, toolName, out, toolCtx)
+	return goCtx
+}
+
+func (e *ToolExecutor) sanitizeResult(toolCtx *ToolContext, toolName string, out any) (any, error) {
+	if e.SanitizeToolResult == nil {
+		return out, nil
+	}
+	return e.SanitizeToolResult(e.hookCtx(toolCtx), toolName, out, toolCtx)
+}
+
+func (e *ToolExecutor) sanitizeForLog(toolCtx *ToolContext, toolName string, raw, llmSanitized any) any {
+	if e.SanitizeToolLog != nil {
+		out, err := e.SanitizeToolLog(e.hookCtx(toolCtx), toolName, raw, toolCtx)
+		if err == nil {
+			return out
+		}
+	}
+	if e.SanitizeToolResult != nil {
+		return llmSanitized
+	}
+	return raw
 }
 
 // ResetBudget clears per-tape tool-call counters. The agent loop should call
@@ -274,7 +294,8 @@ func (e *ToolExecutor) executeSerial(
 			continue
 		}
 		if e.Verbose >= 1 {
-			slog.Info("tool call ok", "tool", name, "result", toolResultLogString(sanitized, resLimit))
+			logOut := e.sanitizeForLog(ctx, name, out, sanitized)
+			slog.Info("tool call ok", "tool", name, "result", toolResultLogString(logOut, resLimit))
 		}
 		result.ToolResults = append(result.ToolResults, tagToolResult(name, sanitized))
 	}
@@ -410,7 +431,8 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 					result.Error = ep
 				} else {
 					if e.Verbose >= 1 {
-						slog.Info("tool call ok", "tool", name, "mode", "parallel", "result", toolResultLogString(sanitized, resLimit))
+						logOut := e.sanitizeForLog(ctx, name, r.out, sanitized)
+						slog.Info("tool call ok", "tool", name, "mode", "parallel", "result", toolResultLogString(logOut, resLimit))
 					}
 					result.ToolResults = append(result.ToolResults, tagToolResult(name, sanitized))
 				}
@@ -451,7 +473,8 @@ func (e *ToolExecutor) executeWithParallelSubagents(
 			continue
 		}
 		if e.Verbose >= 1 {
-			slog.Info("tool call ok", "tool", name, "result", toolResultLogString(sanitized, resLimit))
+			logOut := e.sanitizeForLog(ctx, name, out, sanitized)
+			slog.Info("tool call ok", "tool", name, "result", toolResultLogString(logOut, resLimit))
 		}
 		result.ToolResults = append(result.ToolResults, tagToolResult(name, sanitized))
 	}

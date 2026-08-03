@@ -18,6 +18,8 @@ type Hooks interface {
 	BeforeToolCall(ctx context.Context, t *tool.Tool, args map[string]any, toolCtx *tool.ToolContext) error
 	BatchBeforeToolCall(ctx context.Context, items []tool.BatchCheckItem) map[int]error
 	SanitizeToolResult(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
+	SanitizeToolLog(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
+	SanitizeToolAudit(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
 	AfterToolRound(ctx context.Context, args AfterToolRoundArgs) error
 }
 
@@ -46,6 +48,14 @@ func (noopHooks) BatchBeforeToolCall(context.Context, []tool.BatchCheckItem) map
 }
 
 func (noopHooks) SanitizeToolResult(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
+func (noopHooks) SanitizeToolLog(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
+func (noopHooks) SanitizeToolAudit(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
 	return result, nil
 }
 

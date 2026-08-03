@@ -133,6 +133,16 @@ func (m *Manager) SanitizeToolResult(_ context.Context, _ string, result any, _ 
 	return result, nil
 }
 
+// SanitizeToolLog implements agent.Hooks.
+func (m *Manager) SanitizeToolLog(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
+// SanitizeToolAudit implements agent.Hooks.
+func (m *Manager) SanitizeToolAudit(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
 // AfterToolRound implements agent.Hooks.
 func (m *Manager) AfterToolRound(context.Context, agent.AfterToolRoundArgs) error { return nil }
 

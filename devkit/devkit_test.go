@@ -106,6 +106,14 @@ func (testHooks) SanitizeToolResult(_ context.Context, _ string, result any, _ *
 	return result, nil
 }
 
+func (testHooks) SanitizeToolLog(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
+func (testHooks) SanitizeToolAudit(_ context.Context, _ string, result any, _ *tool.ToolContext) (any, error) {
+	return result, nil
+}
+
 func (testHooks) AfterToolRound(context.Context, agent.AfterToolRoundArgs) error { return nil }
 
 func TestBuild_WithCustomHooks(t *testing.T) {

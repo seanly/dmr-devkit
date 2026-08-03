@@ -468,6 +468,14 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 
 			// Build tool result messages for next round
 			var msgs []map[string]any
+			auditResults := make([]any, len(result.ToolResults))
+			for i, tr := range result.ToolResults {
+				toolName := ""
+				if i < len(result.ToolCalls) {
+					toolName = result.ToolCalls[i].Function.Name
+				}
+				auditResults[i] = a.sanitizeToolAudit(ctx, toolName, tr, toolCtx)
+			}
 
 			// Add assistant message with tool calls
 			if len(result.ToolCalls) > 0 {
@@ -523,6 +531,9 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 						"content":      content,
 					})
 
+					uiResult := a.sanitizeToolAudit(ctx, toolName, content, toolCtx)
+					uiContent := fmt.Sprint(uiResult)
+
 					// Notify callback
 					a.onToolCallMu.RLock()
 					fn := a.config.OnToolCall
@@ -531,7 +542,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 						fn(ToolCallEvent{
 							Name:      toolName,
 							Arguments: toolArgs,
-							Result:    content,
+							Result:    uiContent,
 						})
 					}
 
@@ -561,7 +572,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				Tape:        tapeName,
 				Messages:    msgs,
 				ToolCalls:   result.ToolCalls,
-				ToolResults: result.ToolResults,
+				ToolResults: auditResults,
 			})
 
 			// Capture this tool round for the local session memory. Tag each tool
@@ -601,7 +612,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				}
 			}
 			a.recordToolRound(tapeName, step, toolNames, denyCount)
-			review := a.runPostToolReview(ctx, tapeName, step, toolNames, result.ToolResults)
+			review := a.runPostToolReview(ctx, tapeName, step, toolNames, auditResults)
 			if review.Feedback != "" {
 				_ = a.tape.AppendEntry(tapeName, tape.NewSystemEntry(review.Feedback))
 			}

@@ -24,6 +24,8 @@ const (
 	CapHTTP            Capability = "http"         // HTTP endpoint provider
 	CapContextReset         Capability = "context-reset" // OnContextReset
 	CapToolResultSanitizer  Capability = "tool-result-sanitizer"
+	CapToolLogSanitizer     Capability = "tool-log-sanitizer"
+	CapToolAuditSanitizer   Capability = "tool-audit-sanitizer"
 )
 
 // CapabilitySet returns all known capability constants as a slice.
@@ -39,6 +41,8 @@ func CapabilitySet() []Capability {
 		CapHTTP,
 		CapContextReset,
 		CapToolResultSanitizer,
+		CapToolLogSanitizer,
+		CapToolAuditSanitizer,
 	}
 }
 
@@ -61,9 +65,21 @@ type SystemPromptProvider interface {
 }
 
 // ToolResultSanitizer is implemented by plugins that redact sensitive data from
-// tool handler output before it is recorded or sent to the LLM.
+// tool handler output before it is sent to the LLM.
 type ToolResultSanitizer interface {
 	SanitizeToolResult(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
+}
+
+// ToolLogSanitizer is implemented by plugins that redact sensitive data from
+// verbose tool execution logs separately from LLM context.
+type ToolLogSanitizer interface {
+	SanitizeToolLog(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
+}
+
+// ToolAuditSanitizer is implemented by plugins that redact sensitive data from
+// tape records, UI callbacks, and audit stream hooks.
+type ToolAuditSanitizer interface {
+	SanitizeToolAudit(ctx context.Context, toolName string, result any, toolCtx *tool.ToolContext) (any, error)
 }
 
 // PolicyChecker is implemented by plugins that enforce policy before tool calls.
@@ -170,6 +186,12 @@ func InferCapabilities(p Plugin) []Capability {
 	}
 	if _, ok := p.(ToolResultSanitizer); ok {
 		caps = append(caps, CapToolResultSanitizer)
+	}
+	if _, ok := p.(ToolLogSanitizer); ok {
+		caps = append(caps, CapToolLogSanitizer)
+	}
+	if _, ok := p.(ToolAuditSanitizer); ok {
+		caps = append(caps, CapToolAuditSanitizer)
 	}
 	return caps
 }
