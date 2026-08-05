@@ -418,22 +418,35 @@ func buildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]any {
 	if ctx == nil {
 		ctx = &TapeContext{KeepSummary: true}
 	}
+
+	// Pre-pass: collect exec_ids whose run was interrupted.
+	interruptedExecs, _ := collectInterruptedExecs(entries)
+
 	var messages []map[string]any
+	execStartIdx := 0
+	currentExecID := ""
 	for _, e := range entries {
 		switch e.Kind {
+		case "exec_start":
+			execStartIdx = len(messages)
+			currentExecID, _ = e.Payload["exec_id"].(string)
+
 		case "message":
 			msg := make(map[string]any, len(e.Payload))
 			for k, v := range e.Payload {
 				msg[k] = v
 			}
 			messages = append(messages, msg)
+
 		case "system":
 			if content, ok := e.Payload["content"].(string); ok {
 				messages = append(messages, map[string]any{"role": "system", "content": content})
 			}
+
 		case "system_prompt":
 			// Runtime system prompts are audit-only; the agent loop injects the
 			// current composed system prompt via ChatOpts.SystemPrompt on every turn.
+
 		case "compact_summary":
 			if !ctx.KeepSummary {
 				continue
@@ -450,6 +463,32 @@ func buildMessages(entries []TapeEntry, ctx *TapeContext) []map[string]any {
 					"context_kind": "compact_summary",
 				})
 			}
+
+		case "event":
+			name, _ := e.Payload["name"].(string)
+			if name == EventRunInterrupted {
+				data, _ := e.Payload["data"].(map[string]any)
+				execID := currentExecID
+				if data != nil {
+					if id, _ := data["exec_id"].(string); id != "" {
+						execID = id
+					}
+				}
+				if execStartIdx <= len(messages) {
+					execSlice := messages[execStartIdx:]
+					messages = append(messages[:execStartIdx], trimIncompleteInterruptTail(execSlice)...)
+				}
+				meta, interrupted := interruptedExecs[execID]
+				if interrupted && !meta.suppressNotice {
+					messages = append(messages, map[string]any{
+						"role":    "system",
+						"content": InterruptedSystemNotice,
+					})
+				}
+				currentExecID = ""
+			}
+			// other events: audit-only
+
 		case "handoff_packet", "content_replacement":
 			// handoff_packet audit-only
 			// anchor, event, error, exec_*, fork entries are not sent to LLM

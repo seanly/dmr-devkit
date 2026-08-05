@@ -107,12 +107,14 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		a.executor.MaxDuplicateToolCalls = a.config.MaxDuplicateToolCalls
 		a.executor.ResetBudget(tapeName)
 	}
+	interruptRecorded := false
 	defer func() {
 		if err != nil {
 			_ = tc.RecordExecState(tapeName, execID, tape.ExecStateFailed)
 		} else if result != nil {
 			_ = tc.RecordExecState(tapeName, execID, tape.ExecStateCompleted)
 		}
+		a.recordRunInterruptedIfNeeded(ctx, tapeName, execID, &interruptRecorded)
 	}()
 	// ------------------------------------
 
@@ -275,6 +277,10 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	}
 
 	for step := 1; step <= maxSteps; step++ {
+		if ctx.Err() != nil {
+			a.recordRunInterruptedIfNeeded(ctx, tapeName, execID, &interruptRecorded)
+			return nil, toolIterations, ctx.Err()
+		}
 		systemPrompt = mergeWorkflowStepSystemPrompt(a.resolveSystemPrompt(ctx, tapeName), stepSystemOverride)
 
 		// Re-collect tools each step to include newly discovered tools
@@ -417,6 +423,9 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				slog.Warn("agent step transient failure",
 					"step", step, "kind", se.Kind,
 					"source", se.Source, "action", se.Action)
+			}
+			if ctx.Err() != nil {
+				a.recordRunInterruptedIfNeeded(ctx, tapeName, execID, &interruptRecorded)
 			}
 			return nil, toolIterations, err
 		}
@@ -574,6 +583,11 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 				ToolCalls:   result.ToolCalls,
 				ToolResults: auditResults,
 			})
+
+			if ctx.Err() != nil {
+				a.recordRunInterruptedIfNeeded(ctx, tapeName, execID, &interruptRecorded)
+				return nil, toolIterations, ctx.Err()
+			}
 
 			// Capture this tool round for the local session memory. Tag each tool
 			// message with its name so extractSegmentsFromTurn can classify it.

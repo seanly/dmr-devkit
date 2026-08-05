@@ -18,6 +18,9 @@ const (
 	messageOverhead = 4
 	// toolCallOverhead accounts for id/type/function framing in an assistant tool_calls entry.
 	toolCallOverhead = 6
+	// imagePartTokens is a fixed cost for one vision image_url part.
+	// Providers bill images by tiles/resolution, not by base64 character length.
+	imagePartTokens = 4096
 )
 
 // NewTokenEstimator creates a new TokenEstimator with default settings.
@@ -116,18 +119,31 @@ func (e *TokenEstimator) estimatePart(part any) int {
 			return e.estimateString(text)
 		}
 	}
-	// Image URLs have a small but non-zero token cost; account for the URL itself.
 	if t, _ := m["type"].(string); t == "image_url" {
-		if url, _ := m["image_url"].(string); url != "" {
-			return e.estimateString(url)
-		}
-		if urlMap, ok := m["image_url"].(map[string]any); ok {
-			if url, _ := urlMap["url"].(string); url != "" {
-				return e.estimateString(url)
-			}
-		}
+		return e.estimateImageURL(imageURLFromPart(m))
 	}
 	return 0
+}
+
+func imageURLFromPart(m map[string]any) string {
+	if url, _ := m["image_url"].(string); url != "" {
+		return url
+	}
+	if urlMap, ok := m["image_url"].(map[string]any); ok {
+		if url, _ := urlMap["url"].(string); url != "" {
+			return url
+		}
+	}
+	return ""
+}
+
+// estimateImageURL returns a fixed vision cost for image parts.
+// data: URIs must not be estimated as text — base64 length dwarfs real image tokens.
+func (e *TokenEstimator) estimateImageURL(url string) int {
+	if url == "" {
+		return 0
+	}
+	return imagePartTokens
 }
 
 // estimateString estimates tokens for a string using language-aware heuristics.

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,39 @@ func TestTokenEstimator_EstimateToolResult(t *testing.T) {
 	// Tool result should have higher token count (denser) than regular message
 	if tokens < messageTokens {
 		t.Errorf("Tool result tokens (%d) should be >= message tokens (%d) due to higher density", tokens, messageTokens)
+	}
+}
+
+func TestTokenEstimator_ImageDataURIDoesNotScaleWithBase64(t *testing.T) {
+	estimator := NewTokenEstimator()
+
+	small := estimator.Estimate([]map[string]any{{
+		"role": "user",
+		"content": []any{
+			map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": "data:image/png;base64,abc"},
+			},
+		},
+	}})
+	large := estimator.Estimate([]map[string]any{{
+		"role": "user",
+		"content": []any{
+			map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": "data:image/png;base64," + strings.Repeat("A", 2_000_000)},
+			},
+		},
+	}})
+
+	if small <= 0 || large <= 0 {
+		t.Fatalf("expected non-zero image estimates, small=%d large=%d", small, large)
+	}
+	if large > small*2 {
+		t.Fatalf("image estimate scaled with base64 length: small=%d large=%d", small, large)
+	}
+	if large > 20_000 {
+		t.Fatalf("image estimate too large for context budgeting: %d", large)
 	}
 }
 

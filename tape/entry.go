@@ -142,6 +142,17 @@ func NewEventEntry(name string, data map[string]any, opts ...EntryOption) TapeEn
 	return newEntry("event", map[string]any{"name": name, "data": data}, opts...)
 }
 
+// EventRunInterrupted marks an agent run that was cancelled mid-flight
+// (e.g. preempted by a new inbound message). buildMessages keeps completed tool
+// rounds, repairs orphan tool_calls, and optionally injects InterruptedSystemNotice.
+const EventRunInterrupted = "run_interrupted"
+
+// InterruptedSystemNotice is the system message injected into the LLM message
+// stream at the point where a run was interrupted.
+const InterruptedSystemNotice = "[system: the previous turn was interrupted; " +
+	"the assistant reply and tool results above may be incomplete. " +
+	"Re-evaluate based on the latest user message.]"
+
 // CompactSummarySchemaVersion is the current schema version for compact_summary entries.
 const CompactSummarySchemaVersion = 1
 

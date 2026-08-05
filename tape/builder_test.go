@@ -264,3 +264,115 @@ func containsStr(xs []string, s string) bool {
 	}
 	return false
 }
+
+func TestBuildMessages_KeepsCompletedToolsOnInterrupt(t *testing.T) {
+	entries := []TapeEntry{
+		NewExecStartEntry("exec-A", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "old prompt"}),
+		NewMessageEntry(map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "shell"}}}}),
+		NewMessageEntry(map[string]any{"role": "tool", "tool_call_id": "c1", "content": "old result"}),
+		NewEventEntry(EventRunInterrupted, map[string]any{"exec_id": "exec-A", "reason": "cancelled"}),
+		NewExecStartEntry("exec-B", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "new prompt"}),
+	}
+
+	msgs := buildMessages(entries, nil)
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d: %#v", len(msgs), msgs)
+	}
+	if msgs[0]["content"] != "old prompt" {
+		t.Errorf("first message = %#v, want old prompt", msgs[0])
+	}
+	if msgs[3]["content"] != InterruptedSystemNotice {
+		t.Errorf("notice = %#v", msgs[3])
+	}
+	if msgs[4]["content"] != "new prompt" {
+		t.Errorf("last message = %#v, want new prompt", msgs[4])
+	}
+}
+
+func TestBuildMessages_PreemptSuppressesNotice(t *testing.T) {
+	entries := []TapeEntry{
+		NewExecStartEntry("exec-A", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "old prompt"}),
+		NewMessageEntry(map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "shell"}}}}),
+		NewMessageEntry(map[string]any{"role": "tool", "tool_call_id": "c1", "content": "old result"}),
+		NewEventEntry(EventRunInterrupted, map[string]any{"exec_id": "exec-A", "reason": "preempted", "suppress_notice": true}),
+		NewExecStartEntry("exec-B", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "nginx-1.29.1"}),
+	}
+
+	msgs := buildMessages(entries, nil)
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %#v", len(msgs), msgs)
+	}
+	for _, m := range msgs {
+		if m["content"] == InterruptedSystemNotice {
+			t.Fatalf("preempt should suppress notice, got %#v", msgs)
+		}
+	}
+	if msgs[3]["content"] != "nginx-1.29.1" {
+		t.Errorf("last message = %#v", msgs[3])
+	}
+}
+
+func TestBuildMessages_RepairsOrphanToolCalls(t *testing.T) {
+	entries := []TapeEntry{
+		NewExecStartEntry("exec-A", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "run tools"}),
+		NewMessageEntry(map[string]any{"role": "assistant", "content": "", "tool_calls": []any{
+			map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "shell"}},
+			map[string]any{"id": "c2", "type": "function", "function": map[string]any{"name": "shell"}},
+		}}),
+		NewMessageEntry(map[string]any{"role": "tool", "tool_call_id": "c1", "content": "done"}),
+		NewEventEntry(EventRunInterrupted, map[string]any{"exec_id": "exec-A", "reason": "cancelled"}),
+	}
+
+	msgs := buildMessages(entries, nil)
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d: %#v", len(msgs), msgs)
+	}
+	if msgs[3]["tool_call_id"] != "c2" {
+		t.Errorf("expected synthetic for c2, got %#v", msgs[3])
+	}
+	if msgs[3]["content"] != syntheticToolInterruptResult {
+		t.Errorf("synthetic content = %v", msgs[3]["content"])
+	}
+}
+
+func TestBuildMessages_NoInterruptKeepsMessages(t *testing.T) {
+	entries := []TapeEntry{
+		NewExecStartEntry("exec-A", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "hello"}),
+		NewMessageEntry(map[string]any{"role": "assistant", "content": "hi there"}),
+	}
+
+	msgs := buildMessages(entries, nil)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %#v", len(msgs), msgs)
+	}
+	if msgs[0]["content"] != "hello" || msgs[1]["content"] != "hi there" {
+		t.Errorf("unexpected messages: %#v", msgs)
+	}
+}
+
+func TestBuildMessages_MultipleInterrupts(t *testing.T) {
+	entries := []TapeEntry{
+		NewExecStartEntry("exec-A", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "first"}),
+		NewEventEntry(EventRunInterrupted, map[string]any{"exec_id": "exec-A", "reason": "preempted", "suppress_notice": true}),
+		NewExecStartEntry("exec-B", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "second"}),
+		NewEventEntry(EventRunInterrupted, map[string]any{"exec_id": "exec-B", "reason": "preempted", "suppress_notice": true}),
+		NewExecStartEntry("exec-C", "agent", nil),
+		NewMessageEntry(map[string]any{"role": "user", "content": "third"}),
+	}
+
+	msgs := buildMessages(entries, nil)
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %#v", len(msgs), msgs)
+	}
+	if msgs[0]["content"] != "first" || msgs[1]["content"] != "second" || msgs[2]["content"] != "third" {
+		t.Errorf("unexpected messages: %#v", msgs)
+	}
+}
