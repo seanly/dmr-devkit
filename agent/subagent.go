@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -62,8 +63,18 @@ func (a *Agent) RunSubagentWithTools(ctx context.Context, parentTape, prompt, mo
 	tc.Strategy = a.resolveContextStrategy()
 
 	// Inject optional contextJSON as a system message.
+	// When the payload is JSON with a _dmr_skill_context field, use that
+	// markdown text as the system message so the LLM sees clean instructions
+	// while the rest of the JSON is parsed into toolCtx.Context downstream.
 	if strings.TrimSpace(contextJSON) != "" {
-		contextEntry := tape.NewSystemEntry(fmt.Sprintf("[Context from parent task]\n%s", contextJSON))
+		sysMsg := contextJSON
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(contextJSON), &parsed); err == nil {
+			if sm, ok := parsed["_dmr_skill_context"].(string); ok && sm != "" {
+				sysMsg = sm
+			}
+		}
+		contextEntry := tape.NewSystemEntry(fmt.Sprintf("[Context from parent task]\n%s", sysMsg))
 		if err := a.tape.Store.Append(childTape, contextEntry); err != nil {
 			return nil, core.NewError(core.ErrUnknown, "subagent: failed to append context", err)
 		}

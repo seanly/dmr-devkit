@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,7 +101,7 @@ func (m *Manager) skillPromoteTool() *tool.Tool {
 		Spec: tool.ToolSpec{
 			Name:        "skillPromote",
 			Description: "Promote a skill from extended to core (injects into system prompt).",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupExtended,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -118,7 +119,7 @@ func (m *Manager) skillDemoteTool() *tool.Tool {
 		Spec: tool.ToolSpec{
 			Name:        "skillDemote",
 			Description: "Demote a skill from core to extended (removes from system prompt).",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupExtended,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -136,7 +137,7 @@ func (m *Manager) skillListTool() *tool.Tool {
 		Spec: tool.ToolSpec{
 			Name:        "skillList",
 			Description: "List all available skills with their group and location.",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupExtended,
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -151,7 +152,7 @@ func (m *Manager) skillEditTool() *tool.Tool {
 		Spec: tool.ToolSpec{
 			Name:        "skillEdit",
 			Description: "Edit an existing skill. Supports full replacement (content) or patch (old_string + new_string).",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupExtended,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -172,7 +173,7 @@ func (m *Manager) skillDeleteTool() *tool.Tool {
 		Spec: tool.ToolSpec{
 			Name:        "skillDelete",
 			Description: "Delete an existing skill by removing its directory and SKILL.md.",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupExtended,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -230,15 +231,15 @@ func (m *Manager) handleSkillList(_ *tool.ToolContext, _ map[string]any) (any, e
 	}
 	var lines []string
 	for _, s := range m.skills {
-		group := "extended"
+		tag := "[prompt]"
+		if s.Type == "agent" {
+			tag = "[agent]"
+		}
 		if skillIsCore(s) {
-			group = "core"
+			lines = append(lines, fmt.Sprintf("- %s %s: %s", tag, s.Name, s.Description))
+		} else {
+			lines = append(lines, fmt.Sprintf("- %s %s: %s (extended — call skillPromote(name=\"%s\") to enable)", tag, s.Name, s.Description, s.Name))
 		}
-		skType := s.Type
-		if skType == "" {
-			skType = "prompt"
-		}
-		lines = append(lines, fmt.Sprintf("- %s [%s] (%s) %s", s.Name, group, skType, s.Location))
 	}
 	return strings.Join(lines, "\n"), nil
 }
@@ -334,7 +335,7 @@ func (m *Manager) delegateTool() *tool.Tool {
 		Spec: tool.ToolSpec{
 			Name:        "delegate",
 			Description: "Delegate a task to a specialist skill agent. Available specialists: " + strings.Join(m.agentSkillNames(), ", ") + ". The skill name is validated at runtime, so newly created skills are usable immediately.",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupCore,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -359,7 +360,7 @@ func (m *Manager) agentSkillNames() []string {
 	m.ensureSkillsFresh()
 	var names []string
 	for _, s := range m.skills {
-		if s.Type == "agent" {
+		if s.Type == "agent" && skillIsCore(s) {
 			names = append(names, s.Name)
 		}
 	}
@@ -413,6 +414,9 @@ func (m *Manager) runSkillDelegation(ctx *tool.ToolContext, skillID, task string
 	}
 	if sk.Type != "agent" {
 		return map[string]any{"success": false, "error": fmt.Sprintf("skill %q is not an agent skill", skillID)}, nil
+	}
+	if !skillIsCore(sk) {
+		return map[string]any{"success": false, "error": fmt.Sprintf("skill %q is not available for delegation", skillID)}, nil
 	}
 
 	raw, ok := ctx.State[tool.StateKeyRuntimeAgent]
@@ -502,5 +506,18 @@ func buildSkillDelegationContext(ctx *tool.ToolContext, sk *Skill, task string) 
 	b.WriteString("- Return concise, actionable output that the parent agent can use.\n")
 	b.WriteString("- If you cannot complete the task, explain what blocked you and what the parent agent should do next.\n")
 
-	return b.String()
+	markdown := b.String()
+
+	// Preserve parent channel context (chat_id, thread_key, in_thread, etc.) so
+	// subagent tools (e.g. approval requests) can route back to the correct thread.
+	result := make(map[string]any)
+	if ctx != nil && ctx.Context != nil {
+		for k, v := range ctx.Context {
+			result[k] = v
+		}
+	}
+	result["_dmr_skill_context"] = markdown
+
+	jsonBytes, _ := json.Marshal(result)
+	return string(jsonBytes)
 }

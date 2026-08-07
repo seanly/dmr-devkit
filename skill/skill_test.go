@@ -80,7 +80,7 @@ func TestEnsureSkillsFresh_PicksUpNewSkillDir(t *testing.T) {
 	}
 
 	raw := m.ComposeSystemPrompt(context.Background(), "")
-	if !strings.Contains(raw, "beta") || !strings.Contains(raw, "bd") {
+	if !strings.Contains(raw, "## Skills") || !strings.Contains(raw, "skillSearch") {
 		t.Fatalf("system prompt: %q", raw)
 	}
 }
@@ -115,7 +115,7 @@ Rule two.
 	assert.Contains(t, s, "Rule one.")
 }
 
-func TestBuildSystemPrompt_IncludesUsageInstructions(t *testing.T) {
+func TestBuildSystemPrompt_IncludesSearchHint(t *testing.T) {
 	tmp := t.TempDir()
 	promptDir := filepath.Join(tmp, "prompt-skill")
 	agentDir := filepath.Join(tmp, "agent-skill")
@@ -129,21 +129,9 @@ func TestBuildSystemPrompt_IncludesUsageInstructions(t *testing.T) {
 	m := NewManager(cfg)
 
 	prompt := m.ComposeSystemPrompt(context.Background(), "")
-	assert.Contains(t, prompt, "## Skill Usage Instructions")
-	assert.Contains(t, prompt, "skill(name=\"<skill_name>\")")
-	assert.Contains(t, prompt, "delegate(skill=\"<specialist_name>\"")
-	assert.Contains(t, prompt, "Do not silently ignore available skills")
-}
-
-func TestSkillUsageInstructions(t *testing.T) {
-	promptSkills := []*Skill{{Name: "git-commit", Type: "prompt"}}
-	agentSkills := []*Skill{{Name: "researcher", Type: "agent"}}
-	usage := skillUsageInstructions(promptSkills, agentSkills)
-	assert.Contains(t, usage, "Prompt skills")
-	assert.Contains(t, usage, "Specialist agents")
-	assert.Contains(t, usage, "Do not silently ignore available skills")
-
-	assert.Empty(t, skillUsageInstructions(nil, nil))
+	assert.Contains(t, prompt, "## Skills")
+	assert.Contains(t, prompt, "skillSearch")
+	assert.Contains(t, prompt, "skill(name=")
 }
 
 func TestBuildSkillDelegationContext(t *testing.T) {

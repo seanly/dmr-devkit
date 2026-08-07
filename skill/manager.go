@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,7 @@ func (m *Manager) RegisterBuiltin(sk *Skill) {
 
 var _ agent.Hooks = (*Manager)(nil)
 
-// ComposeSystemPrompt injects available core skills into the system prompt.
+// ComposeSystemPrompt injects the skill search hint into the system prompt.
 func (m *Manager) ComposeSystemPrompt(_ context.Context, base string) string {
 	fragment, _ := m.buildSystemPrompt()
 	if fragment == "" {
@@ -150,6 +151,7 @@ func (m *Manager) AfterToolRound(context.Context, agent.AfterToolRoundArgs) erro
 
 func (m *Manager) allTools() []*tool.Tool {
 	tools := []*tool.Tool{
+		m.skillSearchTool(),
 		m.skillTool(),
 		m.skillCreateTool(),
 		m.skillPromoteTool(),
@@ -162,12 +164,114 @@ func (m *Manager) allTools() []*tool.Tool {
 	return tools
 }
 
+func (m *Manager) skillSearchTool() *tool.Tool {
+	return &tool.Tool{
+		Spec: tool.ToolSpec{
+			Name:        "skillSearch",
+			Description: "Search available skills by keywords or task description. Returns matching skill names and descriptions. Call skill(name=\"...\") to load the full content of a skill.",
+			Group:       tool.ToolGroupCore,
+			SearchHint:  "skill, capability, skill.md, find skill, search skill, 技能, 搜索, 查找",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "Keywords describing the task or capability you need, e.g. 'build docker', 'write tests', 'cron job'"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		Handler: m.skillSearchHandler,
+	}
+}
+
+func (m *Manager) skillSearchHandler(_ *tool.ToolContext, args map[string]any) (any, error) {
+	m.ensureSkillsFresh()
+	query, _ := args["query"].(string)
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return "Please provide a search query.", nil
+	}
+
+	// Tokenize query into individual keywords for full-text matching.
+	tokens := strings.Fields(query)
+	if len(tokens) == 0 {
+		return "Please provide a search query.", nil
+	}
+
+	type scoredSkill struct {
+		skill *Skill
+		score int
+	}
+	var scored []scoredSkill
+	for _, s := range m.skills {
+		if !skillIsCore(s) {
+			continue
+		}
+		nameLower := strings.ToLower(s.Name)
+		descLower := strings.ToLower(s.Description)
+
+		score := 0
+		// Exact name match gets highest score.
+		if nameLower == query {
+			score = 100
+		} else if len(tokens) == 1 && strings.Contains(nameLower, tokens[0]) {
+			// Single-token partial name match.
+			score = 50
+		} else {
+			// Full-text: count how many tokens match name or description.
+			nameHits, descHits := 0, 0
+			for _, tok := range tokens {
+				if strings.Contains(nameLower, tok) {
+					nameHits++
+				} else if strings.Contains(descLower, tok) {
+					descHits++
+				}
+			}
+			// All tokens matched in name.
+			if nameHits == len(tokens) {
+				score = 60
+			} else if nameHits > 0 {
+				// Partial name hits.
+				score = 30 + nameHits*10
+			} else if descHits > 0 {
+				// Description hits only.
+				score = 10 + descHits*5
+			}
+		}
+		if score > 0 {
+			scored = append(scored, scoredSkill{skill: s, score: score})
+		}
+	}
+
+	if len(scored) == 0 {
+		return "No skills found matching your query. Try different keywords, or use skillList() to see all available skills.", nil
+	}
+
+	// sort by score descending, then by name ascending
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].skill.Name < scored[j].skill.Name
+	})
+
+	var results []string
+	for _, sc := range scored {
+		tag := "[prompt]"
+		if sc.skill.Type == "agent" {
+			tag = "[agent]"
+		}
+		results = append(results, fmt.Sprintf("- %s %s: %s", tag, sc.skill.Name, sc.skill.Description))
+	}
+
+	return "Matching skills:\n" + strings.Join(results, "\n") + "\n\nFor prompt skills, call skill(name=\"<skill_name>\"). For agent skills, call delegate(skill=\"<skill_name>\", task=\"...\").", nil
+}
+
 func (m *Manager) skillTool() *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
 			Name:        "skill",
 			Description: "Load a skill by name. Returns the skill content.",
-			Group:       m.toolGroup,
+			Group:       tool.ToolGroupCore,
 			SearchHint:  "skill, capability, skill.md, load skill, specialized, 技能, 加载, 能力",
 			Parameters: map[string]any{
 				"type": "object",
@@ -186,20 +290,33 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 	name, _ := args["name"].(string)
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
-		return "(no such skill)", nil
+		return "No skill name provided. Use skillSearch(query=\"...\") to find skills.", nil
 	}
 
-	var loc string
+	var sk *Skill
 	for _, s := range m.skills {
 		if strings.ToLower(s.Name) == name {
-			loc = s.Location
+			sk = s
 			break
 		}
 	}
-	if loc == "" {
-		return "(no such skill)", nil
+	if sk == nil {
+		var suggestions []string
+		for _, s := range m.skills {
+			if strings.Contains(strings.ToLower(s.Name), name) || strings.Contains(strings.ToLower(s.Description), name) {
+				suggestions = append(suggestions, fmt.Sprintf("- %s: %s", s.Name, s.Description))
+			}
+		}
+		if len(suggestions) > 0 {
+			return "No exact skill match found. Did you mean:\n" + strings.Join(suggestions, "\n") + "\n\nUse skillSearch(query=\"...\") for a broader search.", nil
+		}
+		return "No skill found with that name. Use skillSearch(query=\"...\") to search for skills.", nil
 	}
-	s, err := parseSkillFile(loc)
+	if !skillIsCore(sk) {
+		return fmt.Sprintf("Skill %q is currently extended. Call skillPromote(name=\"%s\") first to enable it.", sk.Name, sk.Name), nil
+	}
+
+	s, err := parseSkillFile(sk.Location)
 	if err != nil {
 		return nil, fmt.Errorf("read skill: %w", err)
 	}
@@ -222,120 +339,20 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 
 // --- system prompt ---
 
-const structuredReasoningPrompt = `
-## Structured Reasoning Protocol
+const skillSearchInstructions = `## Skills
 
-When using a skill agent or tackling a complex multi-step task, follow this protocol:
+Project-specific skills are available. To find and load a skill:
 
-### Phase 1: Plan
-Before taking any action, output your plan:
-<plan>
-1. [First step and why]
-2. [Second step and why]
-...
-</plan>
-
-### Phase 2: Execute with Self-Check
-After every 3 tool calls, perform a facts survey:
-<facts_survey>
-Confirmed: [what you know for sure]
-Unresolved: [what you still need to find out]
-Plan status: [which steps are done, which remain]
-</facts_survey>
-
-### Phase 3: Conclude
-Only provide a final answer when all plan steps are complete or you've determined the remaining steps are unnecessary.
-`
+1. Call skillSearch(query="description of what you need") to discover relevant skills.
+2. Call skill(name="exact_skill_name") to load its full instructions.
+3. Follow the loaded instructions to complete the task.`
 
 func (m *Manager) buildSystemPrompt() (string, error) {
 	m.ensureSkillsFresh()
-	var coreSkills []*Skill
-	for _, s := range m.skills {
-		if skillIsCore(s) {
-			coreSkills = append(coreSkills, s)
-		}
-	}
-	if len(coreSkills) == 0 {
+	if len(m.skills) == 0 {
 		return "", nil
 	}
-
-	var promptSkills, agentSkills []*Skill
-	for _, s := range coreSkills {
-		if s.Type == "agent" {
-			agentSkills = append(agentSkills, s)
-		} else {
-			promptSkills = append(promptSkills, s)
-		}
-	}
-
-	var lines []string
-
-	if len(promptSkills) > 0 {
-		lines = append(lines, "<available_skills>")
-		for _, s := range promptSkills {
-			lines = append(lines, "  <skill>")
-			lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapeXML(s.Name)))
-			lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapeXML(s.Description)))
-			lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapeXML(s.Location)))
-			if len(s.Secrets) > 0 {
-				sum := secretsSummaryForPrompt(s.Secrets)
-				if sum != "" {
-					lines = append(lines, fmt.Sprintf(`    <secrets count="%d">%s</secrets>`, len(s.Secrets), escapeXML(sum)))
-				} else {
-					lines = append(lines, fmt.Sprintf(`    <secrets count="%d"></secrets>`, len(s.Secrets)))
-				}
-			}
-			lines = append(lines, "  </skill>")
-		}
-		lines = append(lines, "</available_skills>")
-	}
-
-	if len(agentSkills) > 0 {
-		lines = append(lines, "<available_specialists>")
-		for _, s := range agentSkills {
-			lines = append(lines, "  <specialist>")
-			lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapeXML(s.Name)))
-			lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapeXML(s.Description)))
-			if s.WhenToUse != "" {
-				lines = append(lines, fmt.Sprintf("    <when_to_use>%s</when_to_use>", escapeXML(s.WhenToUse)))
-			}
-			lines = append(lines, "  </specialist>")
-		}
-		lines = append(lines, "</available_specialists>")
-		lines = append(lines, "To delegate to a specialist, call delegate(skill=<name>, task=<description>).")
-	}
-
-	// Add explicit usage instructions so the LLM knows how and when to invoke skills.
-	if usage := skillUsageInstructions(promptSkills, agentSkills); usage != "" {
-		lines = append(lines, "")
-		lines = append(lines, usage)
-	}
-
-	// Inject structured reasoning prompt when agent skills are active.
-	if len(agentSkills) > 0 {
-		lines = append(lines, structuredReasoningPrompt)
-	}
-
-	return strings.Join(lines, "\n"), nil
-}
-
-// skillUsageInstructions builds the usage-instruction block for the system prompt.
-func skillUsageInstructions(promptSkills, agentSkills []*Skill) string {
-	if len(promptSkills) == 0 && len(agentSkills) == 0 {
-		return ""
-	}
-	var lines []string
-	lines = append(lines, "## Skill Usage Instructions")
-	if len(promptSkills) > 0 {
-		lines = append(lines, "- Prompt skills: when a task matches a skill above, first call skill(name=\"<skill_name>\") to load its instructions, then follow those instructions to complete the task.")
-		lines = append(lines, "- Example: skill(name=\"git-commit\") loads the git-commit skill; use its rules to write the commit message.")
-	}
-	if len(agentSkills) > 0 {
-		lines = append(lines, "- Specialist agents: when a task requires expertise described above, call delegate(skill=\"<specialist_name>\", task=\"<concrete task description>\").")
-		lines = append(lines, "- Example: delegate(skill=\"researcher\", task=\"Find the latest Go release notes\") delegates the research step to the researcher specialist.")
-	}
-	lines = append(lines, "- Do not silently ignore available skills. Prefer using or delegating to a skill when one matches the user's request.")
-	return strings.Join(lines, "\n")
+	return skillSearchInstructions, nil
 }
 
 func escapeXML(s string) string {
