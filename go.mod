@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.2.1
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/pelletier/go-toml/v2 v2.3.0
@@ -22,7 +23,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
