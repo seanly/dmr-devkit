@@ -10,6 +10,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/stretchr/testify v1.11.1
+	github.com/yuin/goldmark v1.8.5
 	golang.org/x/sys v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.47.0

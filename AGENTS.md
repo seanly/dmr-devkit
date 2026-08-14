@@ -28,8 +28,20 @@ This document uses a **progressive disclosure** structure. Choose your reading d
 
 | Project | Purpose | Dependency |
 |---------|---------|------------|
-| **dmr-devkit** (this repo) | Embeddable Agent runtime library | Does not depend on dmr |
+| **dmr-devkit** (this repo) | Embeddable Agent runtime library + `okf/` knowledge-format subtree | Does not depend on dmr |
 | **dmr** (private CLI) | Production deployment: config, Web, Cron, packaged plugins | Depends on this module |
+| **okf-devkit** (sibling) | OKF 应用层：`okfctl` CLI、Web Playground、MCP Server | Depends on this module (`okf/` + agent runtime) |
+
+> **`okf/` 子树**：OKF (Open Knowledge Format) 知识格式库——bundle 解析/校验、
+> 知识图谱、FTS5 搜索、8 个消费者工具（`list_concepts` / `search_concepts` /
+> `get_concept` / `get_index` / `get_neighbors` / `get_backlinks` / `check_stale` /
+> `get_trusted`）、frontmatter/markdown 解析、`.okf.yaml` 加严配置。子包：
+> `okf/{bundle,graph,search,service,vcs,frontmatter,markdown,config,tools}`。
+> `okf/tools` 把 `service.Service` 包成 dmr `tool.Tool`（`ReadTools` /
+> `WriteTools` 聚合），okf-devkit playground 与 dmr 的 okf 插件共用此接线。
+> 任意 dmr 消费者可直接 import `github.com/seanly/dmr-devkit/okf/<pkg>`；
+> okf-devkit 提供其上的应用层（CLI / Playground / MCP Server）。权威规范见
+> [`okf/SPEC.md`](okf/SPEC.md)（中译 [`okf/SPEC-CN.md`](okf/SPEC-CN.md)）。
 
 ### Core Architecture (4 Components)
 

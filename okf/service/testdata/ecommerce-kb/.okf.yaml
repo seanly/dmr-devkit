@@ -1,0 +1,22 @@
+custom_types:
+  - name: concept
+    description: Generic knowledge concept
+  - name: table
+    required:
+      - title
+      - description
+    description: Data table definition
+  - name: guideline
+    description: Process or quality guideline
+  - name: Attested Computation
+    required:
+      - title
+      - runtime
+      - executor
+    description: Attested computation logic
+
+rules:
+  require_index: true
+  require_log: false
+  warn_orphan: true
+  warn_untagged: false
