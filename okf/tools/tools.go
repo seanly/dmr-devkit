@@ -44,7 +44,7 @@ func SingleResolver(svc *service.Service) Resolver {
 // agent can scope a call to a specific bundle in multi-bundle mode.
 var bundleParam = map[string]any{
 	"type":        "string",
-	"description": "Bundle name to operate on (optional; defaults to the default bundle). Use list_bundles to enumerate.",
+	"description": "Bundle name to operate on (optional; defaults to the default bundle). Use okfListBundles to enumerate.",
 }
 
 // bundleArg extracts the optional "bundle" selector from tool args.

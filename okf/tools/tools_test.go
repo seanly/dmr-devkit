@@ -141,7 +141,7 @@ func TestResolverUnknownBundleErrors(t *testing.T) {
 		if b == "" {
 			return nil, fmt.Errorf("no bundles mounted")
 		}
-		return nil, fmt.Errorf("unknown bundle %q; call list_bundles", b)
+		return nil, fmt.Errorf("unknown bundle %q; call okfListBundles", b)
 	})
 	lc := findTool(ReadToolsWith(r), "okfListConcepts")
 	if _, err := lc.Handler(nil, map[string]any{"bundle": "nope"}); err == nil {
