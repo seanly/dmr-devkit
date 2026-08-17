@@ -10,8 +10,8 @@ import (
 )
 
 // ProducerToolsWith returns the 5 producer (mutation) tools over a Resolver:
-// create_concept, update_concept, set_frontmatter, append_section,
-// delete_concept. Callers gate them behind approval / read-only mode.
+// okfCreateConcept, okfUpdateConcept, okfSetFrontmatter, okfAppendSection,
+// okfDeleteConcept. Callers gate them behind approval / read-only mode.
 func ProducerToolsWith(r Resolver) []*tool.Tool {
 	return []*tool.Tool{
 		createConceptTool(r),
@@ -30,7 +30,7 @@ func ProducerTools(svc *service.Service) []*tool.Tool { return ProducerToolsWith
 func createConceptTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "create_concept",
+			Name:        "okfCreateConcept",
 			Description: "Create a new OKF concept (writes a .md file to the bundle). type is required. Use this to add knowledge fetched from external sources.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -46,7 +46,8 @@ func createConceptTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id", "type", "body"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfCreateConcept, create_concept, concept, create, write, new",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -70,7 +71,7 @@ func createConceptTool(r Resolver) *tool.Tool {
 func updateConceptTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "update_concept",
+			Name:        "okfUpdateConcept",
 			Description: "Replace a concept's markdown body, preserving its frontmatter.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -81,7 +82,8 @@ func updateConceptTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id", "body"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfUpdateConcept, update_concept, concept, update, replace, body",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -101,7 +103,7 @@ func updateConceptTool(r Resolver) *tool.Tool {
 func setFrontmatterTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "set_frontmatter",
+			Name:        "okfSetFrontmatter",
 			Description: "Set a single frontmatter field on an existing concept. Allowed fields: type, title, description, resource, status, stale_after, tags.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -113,7 +115,8 @@ func setFrontmatterTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id", "field", "value"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfSetFrontmatter, set_frontmatter, frontmatter, meta, field, yaml",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -140,7 +143,7 @@ func setFrontmatterTool(r Resolver) *tool.Tool {
 func appendSectionTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "append_section",
+			Name:        "okfAppendSection",
 			Description: "Append a section (## heading + content) to a concept's body.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -152,7 +155,8 @@ func appendSectionTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id", "heading", "content"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfAppendSection, append_section, section, heading, append",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -176,7 +180,7 @@ func appendSectionTool(r Resolver) *tool.Tool {
 func deleteConceptTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "delete_concept",
+			Name:        "okfDeleteConcept",
 			Description: "Delete a concept (removes its .md file from the bundle). Irreversible.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -186,7 +190,8 @@ func deleteConceptTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfDeleteConcept, delete_concept, concept, delete, remove",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -204,7 +209,7 @@ func deleteConceptTool(r Resolver) *tool.Tool {
 
 // --- helpers ---
 
-// buildMeta constructs a *frontmatter.Meta from create_concept tool args,
+// buildMeta constructs a *frontmatter.Meta from okfCreateConcept tool args,
 // auto-setting provenance (generated) for traceability of machine-authored
 // concepts per OKF §5.2.
 func buildMeta(args map[string]any) (*frontmatter.Meta, error) {

@@ -8,7 +8,7 @@ import (
 
 // TestBacklinksInverseOfNeighbors verifies that for every edge a->b, b's
 // backlinks contain a and a's neighbors contain b. This is the core invariant
-// the get_backlinks / get_neighbors tools rely on.
+// the okfGetBacklinks / okfGetNeighbors tools rely on.
 func TestBacklinksInverseOfNeighbors(t *testing.T) {
 	svc := newServiceFromExample(t)
 	g := svc.Graph()

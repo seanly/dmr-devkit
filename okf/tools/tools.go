@@ -11,8 +11,8 @@
 // SingleResolver and the ReadTools/WriteTools convenience wrappers.
 //
 // Aggregates:
-//   - ReadToolsWith(r)  — non-mutating tools (consumer + dev + present_investigation)
-//   - WriteToolsWith(r) — mutating producer tools (create / update / set_frontmatter / append_section / delete)
+//   - ReadToolsWith(r)  — non-mutating tools (consumer + dev + okfPresentInvestigation)
+//   - WriteToolsWith(r) — mutating producer tools (okfCreateConcept / okfUpdateConcept / okfSetFrontmatter / okfAppendSection / okfDeleteConcept)
 //   - GitReadToolsWith(r) / GitWriteToolsWith(r) — git versioning tools (appended by callers that enable git)
 //   - ReadTools(svc) / WriteTools(svc) — single-bundle back-compat wrappers (git gated by VCS at registration)
 //
@@ -59,7 +59,7 @@ func resolveSvc(r Resolver, args map[string]any) (*service.Service, error) {
 }
 
 // ReadTools returns the non-mutating OKF tools for a single-bundle caller: the
-// 8 consumer tools, the development/validation tools, present_investigation,
+// 8 consumer tools, the development/validation tools, okfPresentInvestigation,
 // and the read-only git tools when VCS is attached. (Multi-bundle callers use
 // ReadToolsWith and append GitReadToolsWith themselves.)
 func ReadTools(svc *service.Service) []*tool.Tool {
@@ -77,7 +77,7 @@ func WriteTools(svc *service.Service) []*tool.Tool {
 }
 
 // ReadToolsWith returns the non-mutating tools (consumer + dev +
-// present_investigation) over a Resolver. Git read tools are NOT included;
+// okfPresentInvestigation) over a Resolver. Git read tools are NOT included;
 // callers that enable git append GitReadToolsWith(r).
 func ReadToolsWith(r Resolver) []*tool.Tool {
 	tools := append(ConsumerToolsWith(r), DevToolsWith(r)...)
@@ -143,7 +143,7 @@ func requiredString(args map[string]any, key string) (string, error) {
 func listConceptsTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "list_concepts",
+			Name:        "okfListConcepts",
 			Description: "List all concepts in the bundle. Optionally filter by type or tag.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -153,7 +153,8 @@ func listConceptsTool(r Resolver) *tool.Tool {
 					"bundle": bundleParam,
 				},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfListConcepts, list_concepts, concept, list, enumerate, type, tag",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -170,7 +171,7 @@ func listConceptsTool(r Resolver) *tool.Tool {
 func searchConceptsTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "search_concepts",
+			Name:        "okfSearchConcepts",
 			Description: "Search for concepts in the OKF bundle by keywords matching titles, types, tags, and body content.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -180,7 +181,8 @@ func searchConceptsTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"query"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfSearchConcepts, search_concepts, concept, search, query, fts, full text",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -199,7 +201,7 @@ func searchConceptsTool(r Resolver) *tool.Tool {
 func getConceptTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_concept",
+			Name:        "okfGetConcept",
 			Description: "Get full details of a concept by its ID (progressive disclosure).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -209,7 +211,8 @@ func getConceptTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetConcept, get_concept, concept, get, detail, id, progressive disclosure",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -228,7 +231,7 @@ func getConceptTool(r Resolver) *tool.Tool {
 func getIndexTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_index",
+			Name:        "okfGetIndex",
 			Description: "Return the navigation structure of an index.md (root by default, or a subdirectory).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -237,7 +240,8 @@ func getIndexTool(r Resolver) *tool.Tool {
 					"bundle": bundleParam,
 				},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetIndex, get_index, index, navigation, directory, toc",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -253,7 +257,7 @@ func getIndexTool(r Resolver) *tool.Tool {
 func getNeighborsTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_neighbors",
+			Name:        "okfGetNeighbors",
 			Description: "Get the concepts directly referenced by a concept (forward graph traversal).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -263,7 +267,8 @@ func getNeighborsTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetNeighbors, get_neighbors, neighbor, graph, forward, link, reference",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -282,7 +287,7 @@ func getNeighborsTool(r Resolver) *tool.Tool {
 func getBacklinksTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_backlinks",
+			Name:        "okfGetBacklinks",
 			Description: "Get the concepts that reference a concept (reverse traversal / impact analysis).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -292,7 +297,8 @@ func getBacklinksTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"id"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetBacklinks, get_backlinks, backlink, reverse, impact, reference",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -311,13 +317,14 @@ func getBacklinksTool(r Resolver) *tool.Tool {
 func checkStaleTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "check_stale",
+			Name:        "okfCheckStale",
 			Description: "List concepts that are stale (past stale_after) or deprecated.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"bundle": bundleParam},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfCheckStale, check_stale, stale, deprecated, expired, status",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -332,7 +339,7 @@ func checkStaleTool(r Resolver) *tool.Tool {
 func getTrustedTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_trusted",
+			Name:        "okfGetTrusted",
 			Description: "List concepts filtered by trust tier (default: human-reviewed).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -341,7 +348,8 @@ func getTrustedTool(r Resolver) *tool.Tool {
 					"bundle": bundleParam,
 				},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetTrusted, get_trusted, trust, tier, verified, human-reviewed",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -359,13 +367,14 @@ func getTrustedTool(r Resolver) *tool.Tool {
 func validateBundleTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "validate_bundle",
+			Name:        "okfValidateBundle",
 			Description: "Run OKF compliance validation and return issues.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"bundle": bundleParam},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfValidateBundle, validate_bundle, validate, compliance, spec, lint",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -380,13 +389,14 @@ func validateBundleTool(r Resolver) *tool.Tool {
 func bundleStatsTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "bundle_stats",
+			Name:        "okfBundleStats",
 			Description: "Return bundle statistics: concept count, types, trust tiers, link counts.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"bundle": bundleParam},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfBundleStats, bundle_stats, stats, count, statistics, summary",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -401,13 +411,14 @@ func bundleStatsTool(r Resolver) *tool.Tool {
 func listTypesTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "list_types",
+			Name:        "okfListTypes",
 			Description: "Return all unique concept types and their counts.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"bundle": bundleParam},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfListTypes, list_types, type, count, taxonomy",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -422,13 +433,14 @@ func listTypesTool(r Resolver) *tool.Tool {
 func getGraphTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_graph",
+			Name:        "okfGetGraph",
 			Description: "Return the knowledge graph as nodes and edges (JSON).",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"bundle": bundleParam},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetGraph, get_graph, graph, nodes, edges, json",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -443,13 +455,14 @@ func getGraphTool(r Resolver) *tool.Tool {
 func getGraphSummaryTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "get_graph_summary",
+			Name:        "okfGetGraphSummary",
 			Description: "Get a summary of the knowledge graph: total nodes, edges, and breakdown by concept type.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"bundle": bundleParam},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGetGraphSummary, get_graph_summary, graph, summary, statistics",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -464,7 +477,7 @@ func getGraphSummaryTool(r Resolver) *tool.Tool {
 func presentInvestigationTool() *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "present_investigation",
+			Name:        "okfPresentInvestigation",
 			Description: "Present a structured investigation report with summary, hypotheses, evidence, and blind spots.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -476,7 +489,8 @@ func presentInvestigationTool() *tool.Tool {
 				},
 				"required": []string{"report"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfPresentInvestigation, present_investigation, investigation, report, summary",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			report, ok := args["report"]

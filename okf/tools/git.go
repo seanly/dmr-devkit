@@ -5,8 +5,8 @@ import (
 	"github.com/seanly/dmr-devkit/okf/service"
 )
 
-// GitReadToolsWith returns the read-only git versioning tools (git_log,
-// git_diff) over a Resolver. Unlike the single-bundle GitReadTools wrapper,
+// GitReadToolsWith returns the read-only git versioning tools (okfGitLog,
+// okfGitDiff) over a Resolver. Unlike the single-bundle GitReadTools wrapper,
 // these are always constructed; a call against a service with no VCS attached
 // returns the service's errVCSDisabled error at call time.
 func GitReadToolsWith(r Resolver) []*tool.Tool {
@@ -16,8 +16,8 @@ func GitReadToolsWith(r Resolver) []*tool.Tool {
 	}
 }
 
-// GitWriteToolsWith returns the write git versioning tools (commit, git_revert,
-// git_restore) over a Resolver. As with GitReadToolsWith, VCS is checked per
+// GitWriteToolsWith returns the write git versioning tools (okfCommit, okfGitRevert,
+// okfGitRestore) over a Resolver. As with GitReadToolsWith, VCS is checked per
 // call.
 func GitWriteToolsWith(r Resolver) []*tool.Tool {
 	return []*tool.Tool{
@@ -48,7 +48,7 @@ func GitWriteTools(svc *service.Service) []*tool.Tool {
 func gitLogTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "git_log",
+			Name:        "okfGitLog",
 			Description: "Show commit history of the bundle, optionally filtered to one concept. Each entry lists sha, author, time, message, and changed files. Use to audit what the agent changed.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -58,7 +58,8 @@ func gitLogTool(r Resolver) *tool.Tool {
 					"bundle":     bundleParam,
 				},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGitLog, git_log, git, log, history, commit",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -75,7 +76,7 @@ func gitLogTool(r Resolver) *tool.Tool {
 func gitDiffTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "git_diff",
+			Name:        "okfGitDiff",
 			Description: "Show a textual diff. With no ref, shows uncommitted working-tree changes; with a ref (commit sha), shows what that commit changed. Optionally restrict to one concept.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -85,7 +86,8 @@ func gitDiffTool(r Resolver) *tool.Tool {
 					"bundle":     bundleParam,
 				},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGitDiff, git_diff, git, diff, compare",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -106,8 +108,8 @@ func gitDiffTool(r Resolver) *tool.Tool {
 func commitTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "commit",
-			Description: "Stage all pending bundle changes and create a git commit. No-op (committed=false) if the tree is clean. Call after meaningful edits so git_revert/git_restore have a baseline.",
+			Name:        "okfCommit",
+			Description: "Stage all pending bundle changes and create a git commit. No-op (committed=false) if the tree is clean. Call after meaningful edits so okfGitRevert/okfGitRestore have a baseline.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -116,7 +118,8 @@ func commitTool(r Resolver) *tool.Tool {
 				},
 				"required": []string{"message"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfCommit, commit, git, snapshot, save",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -135,17 +138,18 @@ func commitTool(r Resolver) *tool.Tool {
 func gitRevertTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "git_revert",
+			Name:        "okfGitRevert",
 			Description: "Undo a commit by creating a new reverse commit (history is preserved). Use to roll back a bad agent edit. The in-memory bundle and search index are resynced automatically.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"ref":    map[string]any{"type": "string", "description": "Commit sha to revert (from git_log)"},
+					"ref":    map[string]any{"type": "string", "description": "Commit sha to revert (from okfGitLog)"},
 					"bundle": bundleParam,
 				},
 				"required": []string{"ref"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGitRevert, git_revert, git, revert, undo, rollback",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)
@@ -164,18 +168,19 @@ func gitRevertTool(r Resolver) *tool.Tool {
 func gitRestoreTool(r Resolver) *tool.Tool {
 	return &tool.Tool{
 		Spec: tool.ToolSpec{
-			Name:        "git_restore",
+			Name:        "okfGitRestore",
 			Description: "Restore a single concept to its state at a given commit (does not rewrite history). Use to recover one concept without reverting a whole commit.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"concept_id": map[string]any{"type": "string", "description": "Concept id to restore (e.g. \"tables/orders\")"},
-					"ref":        map[string]any{"type": "string", "description": "Commit sha to restore from (from git_log)"},
+					"ref":        map[string]any{"type": "string", "description": "Commit sha to restore from (from okfGitLog)"},
 					"bundle":     bundleParam,
 				},
 				"required": []string{"concept_id", "ref"},
 			},
-			Group: tool.ToolGroupCore,
+			Group: tool.ToolGroupExtended,
+			SearchHint: "okfGitRestore, git_restore, git, restore, recover",
 		},
 		Handler: func(_ *tool.ToolContext, args map[string]any) (any, error) {
 			svc, err := resolveSvc(r, args)

@@ -478,11 +478,11 @@ func (s *Service) SetFrontmatter(id, field string, value any) (map[string]any, e
 	defer s.mu.Unlock()
 	c := s.b.Get(id)
 	if c == nil {
-		return nil, fmt.Errorf("set_frontmatter %s: concept not found", id)
+		return nil, fmt.Errorf("okfSetFrontmatter %s: concept not found", id)
 	}
 	meta := *c.Meta // shallow copy; slices are reassigned below, not mutated
 	if err := applyMetaField(&meta, field, value); err != nil {
-		return nil, fmt.Errorf("set_frontmatter %s: %w", id, err)
+		return nil, fmt.Errorf("okfSetFrontmatter %s: %w", id, err)
 	}
 	if err := s.w.WriteConcept(id, &meta, c.Body); err != nil {
 		return nil, err

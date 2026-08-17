@@ -33,9 +33,9 @@ This document uses a **progressive disclosure** structure. Choose your reading d
 | **okf-devkit** (sibling) | OKF 应用层：`okfctl` CLI、Web Playground、MCP Server | Depends on this module (`okf/` + agent runtime) |
 
 > **`okf/` 子树**：OKF (Open Knowledge Format) 知识格式库——bundle 解析/校验、
-> 知识图谱、FTS5 搜索、8 个消费者工具（`list_concepts` / `search_concepts` /
-> `get_concept` / `get_index` / `get_neighbors` / `get_backlinks` / `check_stale` /
-> `get_trusted`）、frontmatter/markdown 解析、`.okf.yaml` 加严配置。子包：
+> 知识图谱、FTS5 搜索、8 个消费者工具（`okfListConcepts` / `okfSearchConcepts` /
+> `okfGetConcept` / `okfGetIndex` / `okfGetNeighbors` / `okfGetBacklinks` / `okfCheckStale` /
+> `okfGetTrusted`）、frontmatter/markdown 解析、`.okf.yaml` 加严配置。子包：
 > `okf/{bundle,graph,search,service,vcs,frontmatter,markdown,config,tools}`。
 > `okf/tools` 把 `service.Service` 包成 dmr `tool.Tool`（`ReadTools` /
 > `WriteTools` 聚合），okf-devkit playground 与 dmr 的 okf 插件共用此接线。

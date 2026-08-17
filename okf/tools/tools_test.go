@@ -40,7 +40,7 @@ func TestReadTools(t *testing.T) {
 	svc := newSvc(t)
 	tools := ReadTools(svc)
 
-	// 8 consumer + 5 dev + present_investigation = 14. No VCS attached to the
+	// 8 consumer + 5 dev + okfPresentInvestigation = 14. No VCS attached to the
 	// plain example bundle, so GitReadTools returns nil and adds nothing.
 	wantCount := 14
 	if len(tools) != wantCount {
@@ -48,12 +48,12 @@ func TestReadTools(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"list_concepts": true, "search_concepts": true, "get_concept": true,
-		"get_index": true, "get_neighbors": true, "get_backlinks": true,
-		"check_stale": true, "get_trusted": true,
-		"validate_bundle": true, "bundle_stats": true, "list_types": true,
-		"get_graph": true, "get_graph_summary": true,
-		"present_investigation": true,
+		"okfListConcepts": true, "okfSearchConcepts": true, "okfGetConcept": true,
+		"okfGetIndex": true, "okfGetNeighbors": true, "okfGetBacklinks": true,
+		"okfCheckStale": true, "okfGetTrusted": true,
+		"okfValidateBundle": true, "okfBundleStats": true, "okfListTypes": true,
+		"okfGetGraph": true, "okfGetGraphSummary": true,
+		"okfPresentInvestigation": true,
 	}
 	for _, n := range toolNames(tools) {
 		if !want[n] {
@@ -62,7 +62,7 @@ func TestReadTools(t *testing.T) {
 	}
 
 	// ReadTools must contain no mutation tools.
-	for _, bad := range []string{"create_concept", "delete_concept", "commit", "git_revert"} {
+	for _, bad := range []string{"okfCreateConcept", "okfDeleteConcept", "okfCommit", "okfGitRevert"} {
 		for _, n := range toolNames(tools) {
 			if n == bad {
 				t.Errorf("ReadTools must not include mutation tool %s", bad)
@@ -82,8 +82,8 @@ func TestWriteTools(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"create_concept": true, "update_concept": true, "set_frontmatter": true,
-		"append_section": true, "delete_concept": true,
+		"okfCreateConcept": true, "okfUpdateConcept": true, "okfSetFrontmatter": true,
+		"okfAppendSection": true, "okfDeleteConcept": true,
 	}
 	for _, n := range toolNames(tools) {
 		if !want[n] {
@@ -114,9 +114,9 @@ func TestRoutingByBundleParam(t *testing.T) {
 		requested = b
 		return svc, nil
 	})
-	lc := findTool(ReadToolsWith(r), "list_concepts")
+	lc := findTool(ReadToolsWith(r), "okfListConcepts")
 	if lc == nil {
-		t.Fatal("list_concepts not in ReadToolsWith")
+		t.Fatal("okfListConcepts not in ReadToolsWith")
 	}
 	if _, err := lc.Handler(nil, map[string]any{"bundle": "repo-x"}); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -143,7 +143,7 @@ func TestResolverUnknownBundleErrors(t *testing.T) {
 		}
 		return nil, fmt.Errorf("unknown bundle %q; call list_bundles", b)
 	})
-	lc := findTool(ReadToolsWith(r), "list_concepts")
+	lc := findTool(ReadToolsWith(r), "okfListConcepts")
 	if _, err := lc.Handler(nil, map[string]any{"bundle": "nope"}); err == nil {
 		t.Error("expected error for unknown bundle, got nil")
 	}
@@ -153,11 +153,11 @@ func TestResolverUnknownBundleErrors(t *testing.T) {
 }
 
 // TestEveryReadToolHasBundleParam ensures the bundle selector is exposed on
-// every svc-backed read tool (present_investigation is svc-free and exempt).
+// every svc-backed read tool (okfPresentInvestigation is svc-free and exempt).
 func TestEveryReadToolHasBundleParam(t *testing.T) {
 	svc := newSvc(t)
 	for _, tt := range ReadToolsWith(SingleResolver(svc)) {
-		if tt.Spec.Name == "present_investigation" {
+		if tt.Spec.Name == "okfPresentInvestigation" {
 			continue
 		}
 		props, _ := tt.Spec.Parameters["properties"].(map[string]any)
