@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/seanly/dmr-devkit/okf/frontmatter"
 	"github.com/seanly/dmr-devkit/okf/bundle"
+	"github.com/seanly/dmr-devkit/okf/frontmatter"
 )
 
 // NodeType categorizes graph nodes.
@@ -25,6 +25,7 @@ type Node struct {
 	Label   string   `json:"label"`
 	Type    NodeType `json:"type"`
 	Trust   string   `json:"trust"`
+	Status  string   `json:"status"`
 	Title   string   `json:"title"`
 	Summary string   `json:"summary"`
 }
@@ -64,14 +65,19 @@ func NewGraph(b *bundle.Bundle) *Graph {
 			}
 		}
 		trust := "unverified"
+		status := "stable"
 		if c.Meta != nil {
 			trust = string(c.Meta.DeriveTrustTier())
+			if c.Meta.Status != "" {
+				status = c.Meta.Status
+			}
 		}
 		g.Nodes = append(g.Nodes, Node{
 			ID:      id,
 			Label:   label,
 			Type:    nt,
 			Trust:   trust,
+			Status:  status,
 			Title:   c.Meta.Title,
 			Summary: c.Summary(),
 		})
