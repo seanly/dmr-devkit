@@ -330,7 +330,8 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 	if s.Type == "agent" && s.WhenToUse != "" {
 		fmt.Fprintf(&b, "**When to use:** %s\n", s.WhenToUse)
 	}
-	fmt.Fprintf(&b, "**Location:** %s\n\n", s.Location)
+	skillDir := filepath.Dir(s.Location)
+	fmt.Fprintf(&b, "Base directory for this skill: %s\n\n", skillDir)
 	b.WriteString("## Instructions\n")
 	b.WriteString("Please follow the instructions below when executing this task. Do not deviate from them unless the user explicitly asks otherwise.\n\n")
 	b.WriteString(s.Content)

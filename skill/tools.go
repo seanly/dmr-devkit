@@ -41,6 +41,11 @@ func (m *Manager) skillCreateTool() *tool.Tool {
 						"type":        "string",
 						"description": "Category subdirectory (e.g. 'devops', 'coding'). Default: ''",
 					},
+					"files": map[string]any{
+						"type":        "object",
+						"description": "Optional supporting files to create alongside SKILL.md. Keys are relative paths inside the skill directory (e.g. 'references/topology.md', 'scripts/setup.sh'). Values are file contents.",
+						"additionalProperties": map[string]any{"type": "string"},
+					},
 				},
 				"required": []string{"name", "content"},
 			},
@@ -65,10 +70,23 @@ func (m *Manager) handleSkillCreate(_ *tool.ToolContext, args map[string]any) (a
 		group = "extended"
 	}
 
+	files, err := parseSkillBundleFiles(args["files"])
+	if err != nil {
+		return map[string]any{"success": false, "error": err.Error()}, nil
+	}
+
 	if m.config.SecurityScan {
 		if err := scanSkillContent(content); err != nil {
 			return map[string]any{"success": false, "error": err.Error()}, nil
 		}
+	}
+
+	totalSize := len(content)
+	for _, c := range files {
+		totalSize += len(c)
+	}
+	if totalSize > m.config.MaxSkillSize {
+		return map[string]any{"success": false, "error": fmt.Sprintf("skill bundle exceeds max size %d", m.config.MaxSkillSize)}, nil
 	}
 	if err := validateSkillContent(content, m.config.MaxSkillSize); err != nil {
 		return map[string]any{"success": false, "error": err.Error()}, nil
@@ -83,10 +101,35 @@ func (m *Manager) handleSkillCreate(_ *tool.ToolContext, args map[string]any) (a
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return map[string]any{"success": false, "error": err.Error()}, nil
 	}
+
+	// Helper to clean up the directory on any failure.
+	cleanup := func() { os.RemoveAll(dir) }
+
 	path := filepath.Join(dir, "SKILL.md")
 	if err := writeFileAtomic(path, []byte(content), 0o600); err != nil {
-		os.RemoveAll(dir)
+		cleanup()
 		return map[string]any{"success": false, "error": err.Error()}, nil
+	}
+
+	for relPath, fileContent := range files {
+		if err := validateSkillBundlePath(relPath); err != nil {
+			cleanup()
+			return map[string]any{"success": false, "error": err.Error()}, nil
+		}
+		target := filepath.Join(dir, filepath.FromSlash(relPath))
+		// Final guard: target must stay inside the skill directory.
+		if !isPathUnderRoot(target, dir) {
+			cleanup()
+			return map[string]any{"success": false, "error": fmt.Sprintf("file path escapes skill dir: %s", relPath)}, nil
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			cleanup()
+			return map[string]any{"success": false, "error": err.Error()}, nil
+		}
+		if err := writeFileAtomic(target, []byte(fileContent), 0o600); err != nil {
+			cleanup()
+			return map[string]any{"success": false, "error": err.Error()}, nil
+		}
 	}
 
 	m.cleanupAutoSkills()
@@ -520,4 +563,58 @@ func buildSkillDelegationContext(ctx *tool.ToolContext, sk *Skill, task string) 
 
 	jsonBytes, _ := json.Marshal(result)
 	return string(jsonBytes)
+}
+
+// parseSkillBundleFiles extracts the optional "files" argument for skillCreate.
+// Keys must be relative paths inside the skill directory; values are file contents.
+func parseSkillBundleFiles(raw any) (map[string]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("files must be an object mapping relative paths to contents")
+	}
+	out := make(map[string]string, len(m))
+	for relPath, contentRaw := range m {
+		relPath = strings.TrimSpace(relPath)
+		content, ok := contentRaw.(string)
+		if !ok {
+			return nil, fmt.Errorf("file %q content must be a string", relPath)
+		}
+		out[relPath] = content
+	}
+	return out, nil
+}
+
+// validateSkillBundlePath validates a relative path inside a skill bundle.
+// It rejects absolute paths, empty paths, and any segment that is "..".
+func validateSkillBundlePath(relPath string) error {
+	if relPath == "" {
+		return fmt.Errorf("skill bundle file path cannot be empty")
+	}
+	if relPath == "." || relPath == ".." {
+		return fmt.Errorf("skill bundle file path cannot be %q", relPath)
+	}
+	if filepath.IsAbs(relPath) {
+		return fmt.Errorf("skill bundle file path must be relative: %s", relPath)
+	}
+	// Normalize to forward slashes so we catch ".." on all platforms.
+	clean := filepath.ToSlash(filepath.Clean(relPath))
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == ".." {
+			return fmt.Errorf("skill bundle file path escapes skill dir: %s", relPath)
+		}
+	}
+	return nil
+}
+
+// isPathUnderRoot reports whether target is the same as root or strictly
+// contained within root. Both paths should be absolute.
+func isPathUnderRoot(target, root string) bool {
+	if target == root {
+		return true
+	}
+	sep := string(filepath.Separator)
+	return strings.HasPrefix(target, root+sep)
 }

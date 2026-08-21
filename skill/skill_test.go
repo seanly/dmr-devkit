@@ -110,6 +110,7 @@ Rule two.
 	assert.Contains(t, s, "# Skill Loaded: alpha")
 	assert.Contains(t, s, "**Description:** Alpha skill")
 	assert.Contains(t, s, "**Type:** prompt")
+	assert.Contains(t, s, "Base directory for this skill:")
 	assert.Contains(t, s, "## Instructions")
 	assert.Contains(t, s, "Please follow the instructions below")
 	assert.Contains(t, s, "Rule one.")
