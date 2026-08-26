@@ -54,11 +54,31 @@ func (a *AgentNode) Name() string {
 func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input any) iter.Seq2[*workflow.Event, error] {
 	return func(yield func(*workflow.Event, error) bool) {
 		name := a.Name()
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
-		if !yield(&workflow.Event{Type: workflow.EventTypeWorkflowStart, Workflow: name, Step: wctx.Step, Timestamp: time.Now()}, nil) {
+		// Go's range-over-func panics if yield is called after it returned false
+		// ("range function continued iteration after function for loop body returned false").
+		// OnToolCall / OnUIWidget fire from inside runInvocation, so a consumer that
+		// stops (SSE disconnect, WriteSSEEvent failure, break on workflow_end) must
+		// both suppress further yields and cancel the agent run.
+		stopped := false
+		emit := func(ev *workflow.Event, err error) bool {
+			if stopped {
+				return false
+			}
+			if !yield(ev, err) {
+				stopped = true
+				cancel()
+				return false
+			}
+			return true
+		}
+
+		if !emit(&workflow.Event{Type: workflow.EventTypeWorkflowStart, Workflow: name, Step: wctx.Step, Timestamp: time.Now()}, nil) {
 			return
 		}
-		if !yield(&workflow.Event{Type: workflow.EventTypeNodeStart, Workflow: name, Node: name, Step: wctx.Step, Timestamp: time.Now()}, nil) {
+		if !emit(&workflow.Event{Type: workflow.EventTypeNodeStart, Workflow: name, Node: name, Step: wctx.Step, Timestamp: time.Now()}, nil) {
 			return
 		}
 
@@ -86,7 +106,7 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 				Arguments: truncateDisplayRunes(ev.Arguments, toolTraceMaxRunes),
 				Result:    truncateDisplayRunes(ev.Result, toolTraceMaxRunes),
 			}
-			_ = yield(&workflow.Event{
+			_ = emit(&workflow.Event{
 				Type:      workflow.EventTypeToolCall,
 				Workflow:  name,
 				Node:      name,
@@ -98,7 +118,7 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 
 		// Capture UI widgets emitted during agent run.
 		a.Kit.Agent.SetOnUIWidget(func(widget any) {
-			_ = yield(&workflow.Event{
+			_ = emit(&workflow.Event{
 				Type:      workflow.EventTypeUIWidget,
 				Workflow:  name,
 				Node:      name,
@@ -107,12 +127,15 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 				Timestamp: time.Now(),
 			}, nil)
 		})
+		defer func() {
+			a.Kit.Agent.SetOnToolCall(nil)
+			a.Kit.Agent.SetOnUIWidget(nil)
+		}()
 
 		res, err := a.runInvocation(ctx, wctx, prompt)
-
-		// Restore previous callbacks.
-		a.Kit.Agent.SetOnToolCall(nil)
-		a.Kit.Agent.SetOnUIWidget(nil)
+		if stopped {
+			return
+		}
 
 		endEv := &workflow.Event{
 			Type:      workflow.EventTypeNodeEnd,
@@ -129,12 +152,12 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 		if err != nil {
 			endEv.Error = err.Error()
 		}
-		if !yield(endEv, nil) {
+		if !emit(endEv, nil) {
 			return
 		}
 
 		final := &workflow.Result{Output: output, Error: err, Steps: wctx.Step}
-		_ = yield(&workflow.Event{
+		_ = emit(&workflow.Event{
 			Type:      workflow.EventTypeWorkflowEnd,
 			Workflow:  name,
 			Step:      wctx.Step,
