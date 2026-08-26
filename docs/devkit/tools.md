@@ -93,6 +93,20 @@ func main() {
 }
 ```
 
+## 可选工具包
+
+下列包**不会**由 `devkit.Build` 默认注入，由调用方显式挂到 `Options.Tools`：
+
+| 包 | 构造 | 说明 |
+|----|------|------|
+| `tools/fs` | `fs.Tools()` | fsRead/Write/Edit/Grep/Glob/List |
+| `tools/shell` | `shell.New(opts).Tools()` | Unix shell + 后台 job（Windows 为空） |
+| `tools/powershell` | `powershell.New(opts).Tools()` | Windows PowerShell（非 Windows 为空） |
+| `tools/memory` | `memory.Open(ctx, cfg, blob).Tools()` | 知识库 17 个工具 |
+| `tools/credentials` | `credentials.Tools(store)` | 凭据 CRUD；注入用 `credentials.InjectLocalBindings` |
+
+`tools/script` 仍通过 `script.Load` 加载自描述脚本。
+
 ## ToolContext 使用
 
 `ToolContext` 提供了工具运行时的上下文信息：

@@ -216,6 +216,31 @@ visionTool := tools.VisionTool(model)
 
 Located in `tools/vision/`.
 
+### Optional host tools (`tools/fs`, `tools/shell`, `tools/powershell`, `tools/memory`, `tools/credentials`)
+
+These packages are **not** registered by `devkit.Build` by default. Hosts append them to `Options.Tools`:
+
+```go
+opts.Tools = append(opts.Tools, fstools.Tools()...)
+
+sh := shelltools.New(shelltools.Options{Timeout: 30, Interactive: true})
+opts.Tools = append(opts.Tools, sh.Tools()...)
+defer sh.Close()
+
+ps := pstools.New(pstools.Options{Timeout: 30})
+opts.Tools = append(opts.Tools, ps.Tools()...)
+defer ps.Close()
+
+svc, _ := memorytools.Open(ctx, memorytools.Config{SQLiteDSN: "file:mem.db"}, nil)
+opts.Tools = append(opts.Tools, svc.Tools()...)
+defer svc.Close()
+
+store, _ := cred.OpenStore(cred.OpenOpts{...})
+opts.Tools = append(opts.Tools, credtools.Tools(store)...)
+```
+
+Credential injection into `shell` / `powershell` uses `credentials.InjectLocalBindings` on `BeforeToolCall`.
+
 ---
 
 ## Error Handling in Handlers
