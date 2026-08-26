@@ -216,7 +216,7 @@ visionTool := tools.VisionTool(model)
 
 Located in `tools/vision/`.
 
-### Optional host tools (`tools/fs`, `tools/shell`, `tools/powershell`, `tools/memory`, `tools/credentials`)
+### Optional host tools (`tools/fs`, `tools/shell`, `tools/powershell`, `tools/memory`, `tools/credentials`, `tools/script`)
 
 These packages are **not** registered by `devkit.Build` by default. Hosts append them to `Options.Tools`:
 
@@ -237,9 +237,14 @@ defer svc.Close()
 
 store, _ := cred.OpenStore(cred.OpenOpts{...})
 opts.Tools = append(opts.Tools, credtools.Tools(store)...)
+
+scriptTools, _ := script.Load(ctx, "tools.d", script.Options{})
+opts.Tools = append(opts.Tools, scriptTools...)
 ```
 
 Credential injection into `shell` / `powershell` uses `credentials.InjectLocalBindings` on `BeforeToolCall`.
+
+`tools/script` bridges self-describing executables (shell-operator `--config` protocol) into `*tool.Tool`. Each script prints a JSON spec on `--config` and exchanges args/results via `TOOL_ARGS_PATH` / `TOOL_RESULT_PATH` at run time. Default group is `extended`; names get a `script_` prefix. Full contract: [`tools/script/README.md`](../../tools/script/README.md).
 
 ---
 

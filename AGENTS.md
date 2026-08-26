@@ -203,5 +203,6 @@ This project already has the following documentation. Their relationship with AG
 | `docs/devkit/*.md` | Per-topic detailed Chinese docs | L2–L3 |
 | `docs/skills/README.md` | Claude Code Skills index | Development aid |
 | `docs/cwd-management.md` | Working directory management | L2 |
+| `tools/script/README.md` | Script tool protocol (`--config`, discovery, I/O) | L2 |
 
 > AGENTS.md does not replace the above documents. It provides AI Agents with a **reading-order-constrained** progressive navigation. Human developers can still read detailed docs directly under `docs/devkit/`.

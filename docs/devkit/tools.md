@@ -104,8 +104,7 @@ func main() {
 | `tools/powershell` | `powershell.New(opts).Tools()` | Windows PowerShell（非 Windows 为空） |
 | `tools/memory` | `memory.Open(ctx, cfg, blob).Tools()` | 知识库 17 个工具 |
 | `tools/credentials` | `credentials.Tools(store)` | 凭据 CRUD；注入用 `credentials.InjectLocalBindings` |
-
-`tools/script` 仍通过 `script.Load` 加载自描述脚本。
+| `tools/script` | `script.Load(ctx, dir, opts)` | 自描述可执行文件 → 工具；协议见 [tools/script/README.md](../../tools/script/README.md) |
 
 ## ToolContext 使用
 

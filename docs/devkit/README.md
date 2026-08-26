@@ -83,6 +83,7 @@ AI_API_KEY=your-key AI_MODEL=gpt-4o-mini go run main.go
 - [架构与设计原理](architecture.md) - 理解 devkit 的核心设计思想
 - [API 参考](api-reference.md) - `Build`、`Options`、`Kit` 完整 API 说明
 - [工具开发](tools.md) - 如何为 Agent 注册和实现工具
+- [Script 工具协议](../../tools/script/README.md) - 自描述可执行文件的 `--config` 契约与 `script.Load`
 - [插件开发](plugins.md) - 如何在 devkit 中使用 DMR 插件
 - [工作流编排](workflow.md) - 使用 Sequential、Parallel、Graph 编排多步骤 Agent
 - [告警接入工作流](workflow-alerting.md) - 将监控告警接入工作流实现自动分级响应
