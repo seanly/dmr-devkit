@@ -166,6 +166,19 @@ func (o *Options) resolvedModels() []config.ModelConfig {
 	return []config.ModelConfig{o.modelConfig()}
 }
 
+// primaryModel returns the first entry with Default=true, or models[0].
+func primaryModel(models []config.ModelConfig) config.ModelConfig {
+	if len(models) == 0 {
+		return config.ModelConfig{}
+	}
+	for i := range models {
+		if models[i].Default {
+			return models[i]
+		}
+	}
+	return models[0]
+}
+
 func (o *Options) validate() error {
 	if len(o.Models) > 0 {
 		for i := range o.Models {
@@ -263,7 +276,7 @@ func Build(ctx context.Context, opts Options) (*Kit, error) {
 	}
 
 	models := opts.resolvedModels()
-	mc := models[0]
+	mc := primaryModel(models)
 	httpHdr, httpClient := mc.HTTPTimeouts()
 	llmCore := core.NewLLMCore(core.LLMCoreConfig{
 		Model:                     mc.Model,

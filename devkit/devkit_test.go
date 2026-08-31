@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/seanly/dmr-devkit/agent"
+	"github.com/seanly/dmr-devkit/config"
 	"github.com/seanly/dmr-devkit/tape"
 	"github.com/seanly/dmr-devkit/tool"
 )
@@ -150,6 +151,56 @@ func TestBuild_OnClose(t *testing.T) {
 	}
 	if !closed {
 		t.Fatal("OnClose not invoked")
+	}
+}
+
+func TestPrimaryModel_DefaultNotFirst(t *testing.T) {
+	t.Parallel()
+	models := []config.ModelConfig{
+		{Name: "kimi", Model: "kimi-k2.6"},
+		{Name: "ds-flash", Model: "deepseek-v4-flash", Default: true},
+	}
+	got := primaryModel(models)
+	if got.Name != "ds-flash" {
+		t.Fatalf("primaryModel = %q, want ds-flash", got.Name)
+	}
+}
+
+func TestPrimaryModel_FallbackFirst(t *testing.T) {
+	t.Parallel()
+	models := []config.ModelConfig{
+		{Name: "first", Model: "m1"},
+		{Name: "second", Model: "m2"},
+	}
+	got := primaryModel(models)
+	if got.Name != "first" {
+		t.Fatalf("primaryModel = %q, want first", got.Name)
+	}
+}
+
+func TestBuild_DefaultModelNotFirst(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	kit, err := Build(ctx, Options{
+		Models: []config.ModelConfig{
+			{Name: "kimi", Model: "kimi-k2.6", APIKey: "k"},
+			{Name: "ds-flash", Model: "deepseek-v4-flash", APIKey: "k", Default: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = kit.Close(ctx) })
+
+	m := kit.Agent.GetCurrentModel("tape1")
+	if m == nil || m.Name != "ds-flash" {
+		t.Fatalf("GetCurrentModel = %+v, want ds-flash", m)
+	}
+	if kit.Client == nil || kit.Client.Core == nil {
+		t.Fatal("missing chat client")
+	}
+	if got := kit.Client.Core.Model(); got != "deepseek-v4-flash" {
+		t.Fatalf("default ChatClient model = %q, want deepseek-v4-flash", got)
 	}
 }
 
