@@ -41,16 +41,16 @@ func cloneTapeState(src *TapeState) *TapeState {
 
 // Manager holds per-tape replacement state across turns.
 type Manager struct {
-	policy Policy
-	mu     sync.Mutex
-	states map[string]*TapeState
+	policy       Policy
+	mu           sync.Mutex
+	states       map[string]*TapeState
 	mcLastAssist map[string]int64 // unix seconds; gap-based microcompact
 }
 
 // NewManager returns a manager using the given workspace-backed policy.
 func NewManager(p Policy) *Manager {
 	if p.SkipTools == nil {
-		p.SkipTools = map[string]struct{}{"fsRead": {}}
+		p.SkipTools = DefaultSkipTools()
 	}
 	return &Manager{
 		policy:       p,
@@ -454,4 +454,3 @@ func clearToolMessagesAt(msgs []map[string]any, idx map[int]struct{}) {
 func (m *Manager) EffectiveThreshold(tool *tool.Tool, configured int, toolName string) int {
 	return EffectivePersistThreshold(tool, configured, m.policy, toolName)
 }
-

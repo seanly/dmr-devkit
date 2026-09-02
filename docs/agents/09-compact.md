@@ -65,7 +65,7 @@ Before:
 [tool] read_file: "{100KB of file content}"
 
 After:
-[tool] read_file: "Result externalized to .dmr/toolresult/read_file_001.md (100KB)"
+[tool] read_file: "Result externalized to .dmr/tool-results/{tape}/{tool_call_id}.txt (100KB)"
 ```
 
 **Trigger**: `MaxResultChars` exceeded
@@ -73,7 +73,7 @@ After:
 **Process**:
 
 1. Tool result exceeds limit
-2. Write full result to `.dmr/toolresult/<toolname>_<seq>.md`
+2. Write full result to `.dmr/tool-results/{tape}/{tool_call_id}.txt`
 3. Replace tape entry with reference
 4. LLM sees preview + file path
 

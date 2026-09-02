@@ -156,11 +156,11 @@ The dynamic description replaces `Spec.Description` when generating the tool lis
 Large results are automatically externalized to disk:
 
 1. Result exceeds `MaxResultChars`
-2. Written to workspace as `.dmr/toolresult/<name>.md`
+2. Written to workspace as `.dmr/tool-results/{tape}/{tool_call_id}.txt`
 3. Tape stores a reference entry
-4. LLM receives truncated preview + file path
+4. LLM receives a `<persisted-output>` preview and the file path
 
-This is managed by `agent/toolresult/` package.
+This is managed by `agent/toolresult/` package. Hosts without `fsRead` can register `tools/toolresult` (`tool_result_read` / `tool_result_grep`) to page or search that tree only. Both names are in the default `SkipTools` set so read-back is not re-externalized.
 
 ---
 
@@ -216,12 +216,13 @@ visionTool := tools.VisionTool(model)
 
 Located in `tools/vision/`.
 
-### Optional host tools (`tools/fs`, `tools/shell`, `tools/powershell`, `tools/memory`, `tools/credentials`, `tools/script`)
+### Optional host tools (`tools/fs`, `tools/toolresult`, `tools/shell`, `tools/powershell`, `tools/memory`, `tools/credentials`, `tools/script`)
 
 These packages are **not** registered by `devkit.Build` by default. Hosts append them to `Options.Tools`:
 
 ```go
 opts.Tools = append(opts.Tools, fstools.Tools()...)
+// Hosts without fsRead: opts.Tools = append(opts.Tools, toolresulttools.Tools()...)
 
 sh := shelltools.New(shelltools.Options{Timeout: 30, Interactive: true})
 opts.Tools = append(opts.Tools, sh.Tools()...)

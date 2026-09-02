@@ -139,7 +139,8 @@ After **two consecutive failures** of the **same** tool/command with the **same*
 Very large tool results are **externalized** under the workspace (default: `.dmr/tool-results/{tape}/{tool_call_id}.txt`). The model sees a **`<persisted-output>`** block with a short preview and the file path—not the full text.
 
 If you need the complete output:
-- Read the persisted file with a file-read tool **when available**
+- Read the persisted file with `fsRead` **when that tool is registered**
+- Or page with `tool_result_read` / search with `tool_result_grep` **when registered** (these only access the persist tree, not the rest of the workspace)
 - Re-run the source tool with pagination, filters, or narrower scope when possible
 
 Older tool message bodies may be **cleared on the wire** (microcompact) while the tape audit trail keeps full history. Prefer targeted queries over dumping huge results.

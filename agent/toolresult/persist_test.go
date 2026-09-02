@@ -65,6 +65,21 @@ func TestProcessNew_SkipsFsRead(t *testing.T) {
 	}
 }
 
+func TestProcessNew_SkipsToolResultReadback(t *testing.T) {
+	ws := t.TempDir()
+	m := NewManager(Policy{Workspace: ws, DefaultMaxChars: 10})
+	big := strings.Repeat("z", 500)
+	for _, name := range []string{"tool_result_read", "tool_result_grep"} {
+		out := m.ProcessNew(10, "main", "c1-"+name, name, big)
+		if strings.Contains(out, PersistedOutputTag) {
+			t.Fatalf("%s should never externalize", name)
+		}
+		if out != big {
+			t.Fatalf("%s: expected full content, got len %d", name, len(out))
+		}
+	}
+}
+
 func TestPersistDirUnderWorkspace_RejectDotDot(t *testing.T) {
 	ws := t.TempDir()
 	_, _, err := persistDirUnderWorkspace(ws, "..", "main")

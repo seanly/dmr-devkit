@@ -8,7 +8,7 @@ import (
 // buildToolResultPolicy maps [config.AgentConfig.ToolResultPolicy] into a runtime policy.
 func buildToolResultPolicy(cfg Config) toolresult.Policy {
 	c := cfg.AgentPolicy.ToolResultPolicy
-	skip := map[string]struct{}{"fsRead": {}}
+	skip := toolresult.DefaultSkipTools()
 	for _, n := range c.SkipTools {
 		if n != "" {
 			skip[n] = struct{}{}

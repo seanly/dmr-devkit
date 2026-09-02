@@ -12,14 +12,24 @@ type MicrocompactPolicy struct {
 
 // Policy configures tool result externalization and compaction.
 type Policy struct {
-	Workspace       string
-	DefaultMaxChars int // per-result externalize threshold clamp (0 = DefaultMaxResultChars)
+	Workspace        string
+	DefaultMaxChars  int // per-result externalize threshold clamp (0 = DefaultMaxResultChars)
 	PerMessageBudget int // aggregate rune budget per parallel tool batch (0 = DefaultPerMessageBudget)
-	PreviewRunes    int
-	PersistSubdir   string
-	Microcompact    MicrocompactPolicy
-	// SkipTools never externalizes output for these names (e.g. fsRead to avoid read-loop).
+	PreviewRunes     int
+	PersistSubdir    string
+	Microcompact     MicrocompactPolicy
+	// SkipTools never externalizes output for these names (e.g. fsRead and
+	// tool_result_read/grep, to avoid a persist/read-back loop).
 	SkipTools map[string]struct{}
+}
+
+// DefaultSkipTools are never externalized when the host does not set SkipTools.
+func DefaultSkipTools() map[string]struct{} {
+	return map[string]struct{}{
+		"fsRead":           {},
+		"tool_result_read": {},
+		"tool_result_grep": {},
+	}
 }
 
 func (p *Policy) effectiveMaxChars() int {

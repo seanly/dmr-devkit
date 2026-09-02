@@ -100,6 +100,7 @@ func main() {
 | 包 | 构造 | 说明 |
 |----|------|------|
 | `tools/fs` | `fs.Tools()` | fsRead/Write/Edit/Grep/Glob/List |
+| `tools/toolresult` | `toolresult.Tools()` | `tool_result_read` / `tool_result_grep`，只读 `{workspace}/.dmr/tool-results/`（无通用 FS 时的回读；不依赖 ripgrep） |
 | `tools/shell` | `shell.New(opts).Tools()` | Unix shell + 后台 job（Windows 为空） |
 | `tools/powershell` | `powershell.New(opts).Tools()` | Windows PowerShell（非 Windows 为空） |
 | `tools/memory` | `memory.Open(ctx, cfg, blob).Tools()` | 知识库 17 个工具 |
