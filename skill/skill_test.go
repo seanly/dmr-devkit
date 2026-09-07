@@ -110,10 +110,49 @@ Rule two.
 	assert.Contains(t, s, "# Skill Loaded: alpha")
 	assert.Contains(t, s, "**Description:** Alpha skill")
 	assert.Contains(t, s, "**Type:** prompt")
-	assert.Contains(t, s, "Base directory for this skill:")
+	assert.Contains(t, s, "Base directory for this skill: "+skillDir)
+	assert.Contains(t, s, skillSupportingFilesHint)
 	assert.Contains(t, s, "## Instructions")
 	assert.Contains(t, s, "Please follow the instructions below")
 	assert.Contains(t, s, "Rule one.")
+}
+
+func TestSkillHandler_BuiltinMemoryContent(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Paths = []string{tmp}
+	m := NewManager(cfg)
+
+	sk, err := ParseSkillMarkdown([]byte(`---
+name: researcher
+description: Builtin researcher
+type: prompt
+---
+Embedded body.
+`), "builtin/researcher/SKILL.md")
+	require.NoError(t, err)
+	m.RegisterBuiltin(sk)
+
+	out, err := m.skillHandler(nil, map[string]any{"name": "researcher"})
+	require.NoError(t, err)
+	s := out.(string)
+	assert.Contains(t, s, "# Skill Loaded: researcher")
+	assert.Contains(t, s, "Embedded body.")
+	assert.NotContains(t, s, "Base directory for this skill:")
+	assert.NotContains(t, s, "builtin/researcher")
+}
+
+func TestSkillDiskDir(t *testing.T) {
+	tmp := t.TempDir()
+	skillDir := filepath.Join(tmp, "alpha")
+	require.NoError(t, os.MkdirAll(skillDir, 0o755))
+	loc := filepath.Join(skillDir, "SKILL.md")
+	require.NoError(t, os.WriteFile(loc, []byte("---\nname: alpha\ndescription: d\n---\nbody\n"), 0o600))
+
+	assert.Equal(t, skillDir, skillDiskDir(&Skill{Location: loc}))
+	assert.Equal(t, "", skillDiskDir(&Skill{Location: "builtin/researcher/SKILL.md"}))
+	assert.Equal(t, "", skillDiskDir(&Skill{Location: ""}))
+	assert.Equal(t, "", skillDiskDir(nil))
 }
 
 func TestBuildSystemPrompt_IncludesSearchHint(t *testing.T) {
@@ -157,4 +196,35 @@ func TestBuildSkillDelegationContext(t *testing.T) {
 	assert.Contains(t, out, "search, read_url")
 	assert.Contains(t, out, "You are a research specialist.")
 	assert.Contains(t, out, "## Response Guidelines")
+	assert.NotContains(t, out, "Base directory for this skill:")
+}
+
+func TestBuildSkillDelegationContext_DiskLocation(t *testing.T) {
+	tmp := t.TempDir()
+	skillDir := filepath.Join(tmp, "researcher")
+	require.NoError(t, os.MkdirAll(skillDir, 0o755))
+	loc := filepath.Join(skillDir, "SKILL.md")
+	require.NoError(t, os.WriteFile(loc, []byte("---\nname: researcher\ndescription: d\ntype: agent\n---\nbody\n"), 0o600))
+
+	sk := &Skill{
+		Name:     "researcher",
+		Content:  "You are a research specialist.",
+		Location: loc,
+	}
+	out := buildSkillDelegationContext(nil, sk, "Find docs")
+	assert.Contains(t, out, "Base directory for this skill: "+skillDir)
+	assert.Contains(t, out, skillSupportingFilesHint)
+	assert.Contains(t, out, "You are a research specialist.")
+}
+
+func TestBuildSkillDelegationContext_EmbedLocation(t *testing.T) {
+	sk := &Skill{
+		Name:     "researcher",
+		Content:  "Embedded specialist body.",
+		Location: "builtin/researcher/SKILL.md",
+	}
+	out := buildSkillDelegationContext(nil, sk, "Find docs")
+	assert.Contains(t, out, "Embedded specialist body.")
+	assert.NotContains(t, out, "Base directory for this skill:")
+	assert.NotContains(t, out, "builtin/researcher")
 }

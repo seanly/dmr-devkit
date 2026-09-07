@@ -14,21 +14,21 @@ import (
 )
 
 type mockRuntimeAgent struct {
-	outputs        []string
-	index          int
-	lastAllowed    []string
-	lastModel      string
-	lastMaxSteps   int
+	outputs         []string
+	index           int
+	lastAllowed     []string
+	lastModel       string
+	lastMaxSteps    int
 	lastContextJSON string
 }
 
-func (m *mockRuntimeAgent) AllModelInfos() []agent.ModelInfo                            { return nil }
-func (m *mockRuntimeAgent) GetCurrentModelName(string) (string, string)                 { return "", "" }
-func (m *mockRuntimeAgent) SwitchModel(string, string) error                            { return nil }
-func (m *mockRuntimeAgent) ClearModelOverride(string) (string, string)                  { return "", "" }
+func (m *mockRuntimeAgent) AllModelInfos() []agent.ModelInfo                    { return nil }
+func (m *mockRuntimeAgent) GetCurrentModelName(string) (string, string)         { return "", "" }
+func (m *mockRuntimeAgent) SwitchModel(string, string) error                    { return nil }
+func (m *mockRuntimeAgent) ClearModelOverride(string) (string, string)          { return "", "" }
 func (m *mockRuntimeAgent) CompactTape(context.Context, string) (string, error) { return "", nil }
 func (m *mockRuntimeAgent) ClearAllDiscoveredTools(string) int                  { return 0 }
-func (m *mockRuntimeAgent) RestartProcess() error                             { return nil }
+func (m *mockRuntimeAgent) RestartProcess() error                               { return nil }
 func (m *mockRuntimeAgent) Run(context.Context, string, string, int32) (*agent.RunResult, error) {
 	return nil, nil
 }
@@ -93,6 +93,42 @@ You are a research specialist.
 	assert.Equal(t, 6, mock.lastMaxSteps)
 	assert.Equal(t, []string{"search", "read_url"}, mock.lastAllowed)
 	assert.Contains(t, mock.lastContextJSON, "research specialist")
+	assert.Contains(t, mock.lastContextJSON, "Base directory for this skill: "+skillDir)
+	assert.Contains(t, mock.lastContextJSON, skillSupportingFilesHint)
+}
+
+func TestHandleSkillDelegate_EmbedBuiltinNoBaseDir(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Paths = []string{tmp}
+	mgr := NewManager(cfg)
+
+	sk, err := ParseSkillMarkdown([]byte(`---
+name: researcher
+description: Builtin researcher
+type: agent
+---
+Embedded specialist body.
+`), "builtin/researcher/SKILL.md")
+	require.NoError(t, err)
+	mgr.RegisterBuiltin(sk)
+
+	mock := &mockRuntimeAgent{outputs: []string{"ok"}}
+	ctx := &tool.ToolContext{
+		Tape:  "main",
+		State: map[string]any{"_runtime_agent": mock},
+	}
+
+	res, err := mgr.handleDelegate(ctx, map[string]any{
+		"skill": "researcher",
+		"task":  "Find docs",
+	})
+	require.NoError(t, err)
+	m := res.(map[string]any)
+	assert.True(t, m["success"].(bool))
+	assert.Contains(t, mock.lastContextJSON, "Embedded specialist body.")
+	assert.NotContains(t, mock.lastContextJSON, "Base directory for this skill:")
+	assert.NotContains(t, mock.lastContextJSON, "builtin/researcher")
 }
 
 func TestHandleSkillDelegate_Truncation(t *testing.T) {

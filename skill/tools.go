@@ -42,8 +42,8 @@ func (m *Manager) skillCreateTool() *tool.Tool {
 						"description": "Category subdirectory (e.g. 'devops', 'coding'). Default: ''",
 					},
 					"files": map[string]any{
-						"type":        "object",
-						"description": "Optional supporting files to create alongside SKILL.md. Keys are relative paths inside the skill directory (e.g. 'references/topology.md', 'scripts/setup.sh'). Values are file contents.",
+						"type":                 "object",
+						"description":          "Optional supporting files to create alongside SKILL.md. Keys are relative paths inside the skill directory (e.g. 'references/topology.md', 'scripts/setup.sh'). Values are file contents.",
 						"additionalProperties": map[string]any{"type": "string"},
 					},
 				},
@@ -539,6 +539,10 @@ func buildSkillDelegationContext(ctx *tool.ToolContext, sk *Skill, task string) 
 	}
 	if len(sk.ToolAllowlist) > 0 {
 		fmt.Fprintf(&b, "**Allowed tools:** %s\n", strings.Join(sk.ToolAllowlist, ", "))
+	}
+	if dir := skillDiskDir(sk); dir != "" {
+		fmt.Fprintf(&b, "Base directory for this skill: %s\n", dir)
+		fmt.Fprintf(&b, "%s\n", skillSupportingFilesHint)
 	}
 
 	b.WriteString("\n## Skill Instructions\n")

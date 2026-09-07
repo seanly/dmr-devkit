@@ -316,11 +316,19 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 		return fmt.Sprintf("Skill %q is currently extended. Call skillPromote(name=\"%s\") first to enable it.", sk.Name, sk.Name), nil
 	}
 
-	s, err := parseSkillFile(sk.Location)
-	if err != nil {
-		return nil, fmt.Errorf("read skill: %w", err)
+	s := sk
+	if skillDiskDir(sk) != "" {
+		parsed, err := parseSkillFile(sk.Location)
+		if err != nil {
+			return nil, fmt.Errorf("read skill: %w", err)
+		}
+		s = parsed
 	}
 
+	return formatSkillLoaded(s), nil
+}
+
+func formatSkillLoaded(s *Skill) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Skill Loaded: %s\n", s.Name)
 	if s.Description != "" {
@@ -330,12 +338,16 @@ func (m *Manager) skillHandler(_ *tool.ToolContext, args map[string]any) (any, e
 	if s.Type == "agent" && s.WhenToUse != "" {
 		fmt.Fprintf(&b, "**When to use:** %s\n", s.WhenToUse)
 	}
-	skillDir := filepath.Dir(s.Location)
-	fmt.Fprintf(&b, "Base directory for this skill: %s\n\n", skillDir)
+	if dir := skillDiskDir(s); dir != "" {
+		fmt.Fprintf(&b, "Base directory for this skill: %s\n", dir)
+		fmt.Fprintf(&b, "%s\n\n", skillSupportingFilesHint)
+	} else {
+		b.WriteByte('\n')
+	}
 	b.WriteString("## Instructions\n")
 	b.WriteString("Please follow the instructions below when executing this task. Do not deviate from them unless the user explicitly asks otherwise.\n\n")
 	b.WriteString(s.Content)
-	return b.String(), nil
+	return b.String()
 }
 
 // --- system prompt ---

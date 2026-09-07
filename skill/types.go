@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -12,7 +14,7 @@ type Skill struct {
 	Group       string
 	Secrets     []SkillSecret
 	Content     string
-	Location    string
+	Location    string // SKILL.md path; embed builtins use a virtual path that is not on disk.
 
 	// Agent skill fields
 	WhenToUse      string
@@ -39,6 +41,22 @@ func (s SkillSecret) EnvName() string {
 	}
 	return strings.TrimSpace(s.Env)
 }
+
+// skillDiskDir returns the on-disk directory of a skill when Location exists as a
+// file. Embed/builtin skills (virtual paths such as builtin/researcher/SKILL.md)
+// return empty so callers do not advertise a fake Base directory.
+func skillDiskDir(sk *Skill) string {
+	if sk == nil || strings.TrimSpace(sk.Location) == "" {
+		return ""
+	}
+	info, err := os.Stat(sk.Location)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	return filepath.Dir(sk.Location)
+}
+
+const skillSupportingFilesHint = "Supporting files in this directory (e.g. references/) can be read with fsRead when needed."
 
 // skillIsCore reports whether the skill is in the core group (default when group is empty).
 func skillIsCore(s *Skill) bool {
