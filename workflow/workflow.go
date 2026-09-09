@@ -38,8 +38,8 @@ type Result struct {
 }
 
 // Runner executes a workflow and returns a *Result wrapped as any.
-// Sequential, Parallel, and Graph all satisfy this interface and can also
-// be used as Nodes inside larger workflows.
+// Sequential and Parallel satisfy this interface and can also be used as
+// Nodes inside larger workflows.
 type Runner interface {
 	Run(ctx context.Context, wctx *Context, input any) (any, error)
 }

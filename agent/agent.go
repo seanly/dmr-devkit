@@ -96,6 +96,27 @@ type Agent struct {
 	builtinTools []*tool.Tool
 }
 
+type runOnToolCallKey struct{}
+type runOnUIWidgetKey struct{}
+
+func toolCallCallback(ctx context.Context, a *Agent) func(ToolCallEvent) {
+	if fn, ok := ctx.Value(runOnToolCallKey{}).(func(ToolCallEvent)); ok {
+		return fn
+	}
+	a.onToolCallMu.RLock()
+	defer a.onToolCallMu.RUnlock()
+	return a.config.OnToolCall
+}
+
+func uiWidgetCallback(ctx context.Context, a *Agent) func(any) {
+	if fn, ok := ctx.Value(runOnUIWidgetKey{}).(func(any)); ok {
+		return fn
+	}
+	a.onToolCallMu.RLock()
+	defer a.onToolCallMu.RUnlock()
+	return a.config.OnUIWidget
+}
+
 // SetTapeControl injects the TapeControl dependency.
 func (a *Agent) SetTapeControl(tc any) {
 	a.cfgMu.Lock()

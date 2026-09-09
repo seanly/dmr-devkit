@@ -59,6 +59,18 @@ func (a *Agent) RunWithOpts(ctx context.Context, tapeName, prompt string, histor
 // allowedTools: nil means no whitelist (all eligible tools remain visible). Non-nil restricts to names
 // in *allowedTools; an empty pointed-to slice means no tools (text-only replies).
 func (a *Agent) RunWithOptsAndTools(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools *[]string, contextJSON string) (*Result, error) {
+	return a.RunWithOptsAndToolsOptions(ctx, tapeName, prompt, historyAfterEntryID, maxSteps, allowedTools, contextJSON, RunOptions{})
+}
+
+// RunWithOptsAndToolsOptions is the per-invocation variant of
+// RunWithOptsAndTools. Callbacks in opts do not mutate Agent global state.
+func (a *Agent) RunWithOptsAndToolsOptions(ctx context.Context, tapeName, prompt string, historyAfterEntryID int32, maxSteps int, allowedTools *[]string, contextJSON string, opts RunOptions) (*Result, error) {
+	if opts.OnToolCall != nil {
+		ctx = context.WithValue(ctx, runOnToolCallKey{}, opts.OnToolCall)
+	}
+	if opts.OnUIWidget != nil {
+		ctx = context.WithValue(ctx, runOnUIWidgetKey{}, opts.OnUIWidget)
+	}
 	var mode *runMode
 	// Always create mode when contextJSON carries extra data (e.g. image parts)
 	// or when there are runtime constraints (maxSteps, allowedTools).
@@ -240,7 +252,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 		anchors, _ := a.tape.Store.FetchAll(tapeName, &tape.FetchOpts{Kinds: []string{"anchor"}})
 		if len(anchors) == 0 {
 			a.Handoff(tapeName, "session/start", map[string]any{
-				"owner":                    "human",
+				"owner":                 "human",
 				tape.StateKeyAnchorUUID: tape.NewUUID(),
 			})
 		}
@@ -544,9 +556,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					uiContent := fmt.Sprint(uiResult)
 
 					// Notify callback
-					a.onToolCallMu.RLock()
-					fn := a.config.OnToolCall
-					a.onToolCallMu.RUnlock()
+					fn := toolCallCallback(ctx, a)
 					if fn != nil {
 						fn(ToolCallEvent{
 							Name:      toolName,
@@ -558,9 +568,7 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 					// Notify UI widget callback: any tool may embed validated A2UI (LLM sends it via send_a2ui_json_to_client; demos may ship fixed shells from custom tools too).
 					if m, ok := tr.(map[string]any); ok {
 						if widget, has := m["validated_a2ui_json"]; has {
-							a.onToolCallMu.RLock()
-							wf := a.config.OnUIWidget
-							a.onToolCallMu.RUnlock()
+							wf := uiWidgetCallback(ctx, a)
 							if wf != nil {
 								wf(widget)
 							}

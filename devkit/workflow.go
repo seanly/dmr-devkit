@@ -28,7 +28,7 @@ func truncateDisplayRunes(s string, maxRunes int) string {
 }
 
 // AgentNode wraps a devkit [*Kit].Agent into a [workflow.Node] so it can be
-// orchestrated by Sequential, Parallel, Graph, or custom workflows.
+// orchestrated by Sequential, Parallel, or custom workflows.
 type AgentNode struct {
 	Kit          *Kit
 	AgentName    string
@@ -100,7 +100,7 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 			wctx.SetState(a.Name()+".system_prompt", a.SystemPrompt)
 		}
 
-		a.Kit.Agent.SetOnToolCall(func(ev agent.ToolCallEvent) {
+		runOpts := agent.RunOptions{OnToolCall: func(ev agent.ToolCallEvent) {
 			payload := &workflow.ToolCallPayload{
 				Name:      ev.Name,
 				Arguments: truncateDisplayRunes(ev.Arguments, toolTraceMaxRunes),
@@ -114,10 +114,7 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 				ToolCall:  payload,
 				Timestamp: time.Now(),
 			}, nil)
-		})
-
-		// Capture UI widgets emitted during agent run.
-		a.Kit.Agent.SetOnUIWidget(func(widget any) {
+		}, OnUIWidget: func(widget any) {
 			_ = emit(&workflow.Event{
 				Type:      workflow.EventTypeUIWidget,
 				Workflow:  name,
@@ -126,13 +123,9 @@ func (a *AgentNode) RunEvents(ctx context.Context, wctx *workflow.Context, input
 				UIWidget:  widget,
 				Timestamp: time.Now(),
 			}, nil)
-		})
-		defer func() {
-			a.Kit.Agent.SetOnToolCall(nil)
-			a.Kit.Agent.SetOnUIWidget(nil)
-		}()
+		}}
 
-		res, err := a.runInvocation(ctx, wctx, prompt)
+		res, err := a.runInvocation(ctx, wctx, prompt, runOpts)
 		if stopped {
 			return
 		}
@@ -184,7 +177,7 @@ func (a *AgentNode) Run(ctx context.Context, wctx *workflow.Context, input any) 
 		prompt = fmt.Sprintf("%v", input)
 	}
 
-	res, err := a.runInvocation(ctx, wctx, prompt)
+	res, err := a.runInvocation(ctx, wctx, prompt, agent.RunOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +186,7 @@ func (a *AgentNode) Run(ctx context.Context, wctx *workflow.Context, input any) 
 
 // runInvocation executes one agent turn with optional tool restriction, optional
 // per-step system prompt (via RunWithOpts/contextJSON), and optional model routing.
-func (a *AgentNode) runInvocation(ctx context.Context, wctx *workflow.Context, prompt string) (*agent.Result, error) {
+func (a *AgentNode) runInvocation(ctx context.Context, wctx *workflow.Context, prompt string, opts agent.RunOptions) (*agent.Result, error) {
 	tapeName := resolveWorkflowTape(a.TapeName, wctx)
 	var ctxJSON string
 	if s := strings.TrimSpace(a.SystemPrompt); s != "" {
@@ -209,17 +202,33 @@ func (a *AgentNode) runInvocation(ctx context.Context, wctx *workflow.Context, p
 			return nil, fmt.Errorf("devkit workflow node: SwitchModel(%q): %w", m, err)
 		}
 	}
-	return a.Kit.Agent.RunWithOptsAndTools(ctx, tapeName, prompt, 0, 0, a.AllowedTools, ctxJSON)
+	return a.Kit.Agent.RunWithOptsAndToolsOptions(ctx, tapeName, prompt, 0, 0, a.AllowedTools, ctxJSON, opts)
 }
 
-// RunWorkflow executes a [workflow.Runner] (Sequential, Parallel, Graph, etc.)
+// RunWorkflow executes a [workflow.Runner] (Sequential, Parallel, etc.)
 // using this Kit's agent and tape infrastructure.
 //
 // It creates a workflow.Context with metadata pointing back to the Kit so that
 // custom nodes can access tape, agent, and hooks via the Context.State/Metadata.
 func (k *Kit) RunWorkflow(ctx context.Context, runner workflow.Runner, input any) (*workflow.Result, error) {
 	wctx := workflow.NewContext()
-	wctx.Metadata["run_id"] = newWorkflowRunID()
+	return k.RunWorkflowWithContext(ctx, runner, wctx, input)
+}
+
+// RunWorkflowWithContext executes a workflow using the caller-provided
+// context.  The context is preserved after execution so callers can inspect
+// state, checkpoints, and interrupt data.  RunWorkflow remains the convenient
+// fresh-context wrapper for callers that do not need that state.
+func (k *Kit) RunWorkflowWithContext(ctx context.Context, runner workflow.Runner, wctx *workflow.Context, input any) (*workflow.Result, error) {
+	if wctx == nil {
+		wctx = workflow.NewContext()
+	}
+	if wctx.Metadata == nil {
+		wctx.Metadata = make(map[string]any)
+	}
+	if _, ok := wctx.Metadata["run_id"]; !ok {
+		wctx.Metadata["run_id"] = newWorkflowRunID()
+	}
 	wctx.Metadata["kit"] = k
 	wctx.Metadata["tape_manager"] = k.TapeManager
 	wctx.Metadata["agent"] = k.Agent
@@ -238,9 +247,23 @@ func (k *Kit) RunWorkflow(ctx context.Context, runner workflow.Runner, input any
 // RunWorkflowStream executes an [workflow.EventStream] and yields execution
 // events for real-time observation.
 func (k *Kit) RunWorkflowStream(ctx context.Context, runner workflow.EventStream, input any) iter.Seq2[*workflow.Event, error] {
+	return k.RunWorkflowStreamWithContext(ctx, runner, workflow.NewContext(), input)
+}
+
+// RunWorkflowStreamWithContext is the streaming counterpart of
+// RunWorkflowWithContext. The supplied context remains available to the
+// caller while events are consumed.
+func (k *Kit) RunWorkflowStreamWithContext(ctx context.Context, runner workflow.EventStream, wctx *workflow.Context, input any) iter.Seq2[*workflow.Event, error] {
 	return func(yield func(*workflow.Event, error) bool) {
-		wctx := workflow.NewContext()
-		wctx.Metadata["run_id"] = newWorkflowRunID()
+		if wctx == nil {
+			wctx = workflow.NewContext()
+		}
+		if wctx.Metadata == nil {
+			wctx.Metadata = make(map[string]any)
+		}
+		if _, ok := wctx.Metadata["run_id"]; !ok {
+			wctx.Metadata["run_id"] = newWorkflowRunID()
+		}
 		wctx.Metadata["kit"] = k
 		wctx.Metadata["tape_manager"] = k.TapeManager
 		wctx.Metadata["agent"] = k.Agent

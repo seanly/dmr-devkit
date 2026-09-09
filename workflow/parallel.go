@@ -42,6 +42,7 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 		type branchOutcome struct {
 			idx    int
 			node   Node
+			ctx    *Context
 			out    any
 			err    error
 			events []*Event // cached events from EventStream branches
@@ -75,7 +76,7 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 					var bevents []*Event
 					for ev, err := range es.RunEvents(scopedCtx, fork, input) {
 						if err != nil {
-							outcomes[idx] = branchOutcome{idx: idx, node: node, err: err}
+							outcomes[idx] = branchOutcome{idx: idx, node: node, ctx: fork, err: err}
 							return nil
 						}
 						bevents = append(bevents, ev)
@@ -86,12 +87,12 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 							out = ev.Result.Output
 						}
 					}
-					outcomes[idx] = branchOutcome{idx: idx, node: node, out: out, events: bevents}
+					outcomes[idx] = branchOutcome{idx: idx, node: node, ctx: fork, out: out, events: bevents}
 					return nil
 				}
 
 				out, err := runNodeWithSpan(scopedCtx, fork, fork.Step, node, input)
-				outcomes[idx] = branchOutcome{idx: idx, node: node, out: out, err: err}
+				outcomes[idx] = branchOutcome{idx: idx, node: node, ctx: fork, out: out, err: err}
 				return nil
 			})
 		}
@@ -135,18 +136,22 @@ func (p *Parallel) RunEvents(ctx context.Context, wctx *Context, input any) iter
 			}
 		}
 
-		// Merge fork step logs back into the main context so resume works.
+		// Merge the actual branch logs deterministically. Branches run against
+		// isolated contexts, so merging after Wait avoids races on the parent
+		// while preserving enough checkpoint data for a later resume.
 		for _, o := range outcomes {
-			// Find the fork context. For simplicity, we re-derive it.
-			fork := wctx.WithMetadata(nil)
-			fork.Step = wctx.Step + o.idx
-			// Note: actual fork stepLog was built inside the goroutine.
-			// We can't easily access it here without a mutex, but for the
-			// event-stream facade the main wctx.StepLog is not used for
-			// parallel branches in the same way. Keep existing behaviour:
-			// parallel resume works via the branch outcome, not stepLog.
-			_ = fork
+			if o.ctx == nil {
+				continue
+			}
+			// Branch state is copied on fork. Merge it back in index order so
+			// downstream nodes can consume branch-produced values. In the rare
+			// case of a key collision, the later branch wins deterministically.
+			for k, v := range o.ctx.State {
+				wctx.SetState(k, v)
+			}
+			wctx.StepLog = append(wctx.StepLog, o.ctx.StepLog...)
 		}
+		wctx.Step += len(p.Nodes)
 
 		if len(errs) > 0 {
 			final := &Result{Output: results, Error: errs[0], Steps: steps}

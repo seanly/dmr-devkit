@@ -26,6 +26,13 @@ type ToolCallEvent struct {
 	Result    string
 }
 
+// RunOptions contains callbacks scoped to one agent invocation. Unlike the
+// legacy SetOnToolCall API, these callbacks are safe for concurrent runs.
+type RunOptions struct {
+	OnToolCall func(ToolCallEvent)
+	OnUIWidget func(any)
+}
+
 // RunResult is the outcome of an agent run.
 type RunResult struct {
 	Output           string
@@ -82,7 +89,7 @@ type InterceptInputArgs struct {
 	TapeStore    any // tape.TapeStore — uses any to avoid import cycles in plugins
 	TapeManager  any // *tape.TapeManager
 	RuntimeAgent RuntimeAgent
-	TapeControl  any // plugin.TapeControl — uses any to avoid import cycles in plugins
+	TapeControl  any    // plugin.TapeControl — uses any to avoid import cycles in plugins
 	DefaultTape  string // canonical session tape; empty means same as TapeName
 }
 
