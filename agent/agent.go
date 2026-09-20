@@ -133,6 +133,19 @@ func (a *Agent) SetDefaultTape(tape string) {
 	a.cfgMu.Unlock()
 }
 
+// SetModels replaces the agent model catalog. The next SwitchModel / LLM
+// call uses the new endpoints; in-flight chat clients keep the previous key
+// until the tape is switched again.
+func (a *Agent) SetModels(models []config.ModelConfig) {
+	if a == nil {
+		return
+	}
+	copied := append([]config.ModelConfig(nil), models...)
+	a.cfgMu.Lock()
+	a.config.Models = copied
+	a.cfgMu.Unlock()
+}
+
 // appendSystemPromptEntry records the composed system prompt to tape.
 // When PersistSystemPrompt is true it writes a regular "system" entry (legacy);
 // otherwise it writes an audit-only "system_prompt" entry so the agent loop can
