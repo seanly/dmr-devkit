@@ -15,6 +15,9 @@ type Config struct {
 	AllowCreate      bool
 	SecurityScan     bool
 	MaxSkillSize     int
+	// AllowPrivate permits skillInstall to fetch loopback and private addresses.
+	// Cloud metadata hosts stay blocked.
+	AllowPrivate bool
 }
 
 // DefaultConfig returns a default configuration.
@@ -91,6 +94,9 @@ func ResolveConfig(base Config, overrides map[string]any) Config {
 	}
 	if v, ok := overrides["allow_create"].(bool); ok {
 		base.AllowCreate = v
+	}
+	if v, ok := overrides["allow_private"].(bool); ok {
+		base.AllowPrivate = v
 	}
 	if v, ok := overrides["security_scan"].(bool); ok {
 		base.SecurityScan = v

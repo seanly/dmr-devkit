@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,16 @@ type Manager struct {
 
 	// toolGroup determines whether skill tools are core or extended.
 	toolGroup tool.ToolGroup
+
+	// installClient overrides the HTTP client used by skillInstall (tests).
+	installClient *http.Client
+	// installAllowPrivate permits loopback and private addresses.
+	// Set from Config.AllowPrivate; tests may override it.
+	installAllowPrivate bool
+	// installMaxDownload overrides the download cap when > 0 (tests).
+	installMaxDownload int64
+	// installHostMap rewrites fetch hosts before download (tests).
+	installHostMap map[string]string
 }
 
 // NewManager creates a new skill manager from config.
@@ -36,11 +47,12 @@ func NewManager(cfg Config) *Manager {
 	}
 
 	return &Manager{
-		config:        cfg,
-		resolvedRoots: dedupeRoots(roots),
-		skills:        discoverSkillsFromRoots(dedupeRoots(roots)),
-		lastScanMtime: maxFileMtimeUnderRoots(dedupeRoots(roots)),
-		toolGroup:     tool.ToolGroupCore,
+		config:              cfg,
+		resolvedRoots:       dedupeRoots(roots),
+		skills:              discoverSkillsFromRoots(dedupeRoots(roots)),
+		lastScanMtime:       maxFileMtimeUnderRoots(dedupeRoots(roots)),
+		toolGroup:           tool.ToolGroupCore,
+		installAllowPrivate: cfg.AllowPrivate,
 	}
 }
 
@@ -154,6 +166,7 @@ func (m *Manager) allTools() []*tool.Tool {
 		m.skillSearchTool(),
 		m.skillTool(),
 		m.skillCreateTool(),
+		m.skillInstallTool(),
 		m.skillPromoteTool(),
 		m.skillDemoteTool(),
 		m.skillListTool(),
