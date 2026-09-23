@@ -7,7 +7,7 @@ func TestStripImagePartsFromMessages(t *testing.T) {
 	msgs := []map[string]any{
 		{"role": "user", "content": "hello"},
 		{
-			"role": "user",
+			"role":    "user",
 			"content": "what is this?",
 			"parts": []any{
 				map[string]any{"type": "text", "text": "what is this?"},
@@ -48,6 +48,37 @@ func TestStripImagePartsFromMessages_imageOnly(t *testing.T) {
 	}
 	if _, ok := out[0]["parts"]; ok {
 		t.Fatal("parts should be removed")
+	}
+}
+
+func TestContentPartTapeURL(t *testing.T) {
+	t.Parallel()
+	part := ContentPartFromMap(map[string]any{
+		"type":      "image_url",
+		"image_url": map[string]any{"url": "data:image/png;base64,abc"},
+		"tape_url":  OmitImageFromTape,
+	})
+	img, ok := part.(ImagePart)
+	if !ok || img.URL != "data:image/png;base64,abc" || img.TapeURL != OmitImageFromTape {
+		t.Fatalf("part = %#v", part)
+	}
+	wire := ContentPartToMap(part)
+	if _, ok := wire["tape_url"]; ok {
+		t.Fatalf("wire must not carry tape_url: %#v", wire)
+	}
+	iu, _ := wire["image_url"].(map[string]any)
+	if iu["url"] != img.URL {
+		t.Fatalf("wire url = %v", iu["url"])
+	}
+	if got := UserTapeParts("look", []ContentPart{part}); got != nil {
+		t.Fatalf("omitted image should not be stored, got %#v", got)
+	}
+	kept := UserTapeParts("look", []ContentPart{
+		TextPart{Text: "caption"},
+		part,
+	})
+	if len(kept) != 2 {
+		t.Fatalf("kept = %#v", kept)
 	}
 }
 

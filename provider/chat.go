@@ -21,20 +21,27 @@ type TextPart struct {
 	Text string `json:"text"`
 }
 
+// OmitImageFromTape is a TapeURL value that keeps an image off the persisted
+// user message. The provider request still uses URL.
+const OmitImageFromTape = "-"
+
 // ImagePart is an image content part.
 // URL may be a data URI (data:image/xxx;base64,...) or an HTTP URL.
+// TapeURL is not sent to the provider. OmitImageFromTape drops the part when
+// the user message is written to the tape.
 type ImagePart struct {
-	URL string `json:"image_url"`
+	URL     string `json:"image_url"`
+	TapeURL string `json:"tape_url,omitempty"`
 }
 
-func (TextPart) isContentPart() {}
+func (TextPart) isContentPart()  {}
 func (ImagePart) isContentPart() {}
 
 // ContentPartFromMap converts a JSON-like map into a ContentPart.
 // Expected formats:
 //
 //	{"type": "text", "text": "hello"}
-//	{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+//	{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}, "tape_url": "-"}
 func ContentPartFromMap(m map[string]any) ContentPart {
 	typ, _ := m["type"].(string)
 	switch typ {
@@ -45,11 +52,42 @@ func ContentPartFromMap(m map[string]any) ContentPart {
 	case "image_url":
 		if iu, ok := m["image_url"].(map[string]any); ok {
 			if url, ok := iu["url"].(string); ok {
-				return ImagePart{URL: url}
+				img := ImagePart{URL: url}
+				if tapeURL, ok := m["tape_url"].(string); ok {
+					img.TapeURL = tapeURL
+				}
+				return img
 			}
 		}
 	}
 	return nil
+}
+
+// UserTapeParts builds the parts array stored on a user tape message.
+// Images with TapeURL OmitImageFromTape are left out so the tape keeps the
+// text and not the data URI. Returns nil when nothing remains to store.
+func UserTapeParts(prompt string, parts []ContentPart) []any {
+	if len(parts) == 0 {
+		return nil
+	}
+	kept := make([]any, 0, len(parts))
+	for _, p := range parts {
+		if img, ok := p.(ImagePart); ok && img.TapeURL == OmitImageFromTape {
+			continue
+		}
+		m := ContentPartToMap(p)
+		if m == nil {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(kept)+1)
+	out = append(out, map[string]any{"type": "text", "text": prompt})
+	out = append(out, kept...)
+	return out
 }
 
 // ContentPartToMap converts a ContentPart to a map suitable for JSON serialization.
@@ -135,7 +173,7 @@ func StripImageContentParts(parts []ContentPart) []ContentPart {
 type Message struct {
 	Role             string        `json:"role"`
 	Content          string        `json:"content"`
-	Parts            []ContentPart `json:"-"` // multi-modal parts; when non-empty, takes precedence over Content
+	Parts            []ContentPart `json:"-"`                           // multi-modal parts; when non-empty, takes precedence over Content
 	ReasoningContent string        `json:"reasoning_content,omitempty"` // prior assistant turn; required by e.g. DeepSeek thinking mode
 	ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID       string        `json:"tool_call_id,omitempty"`

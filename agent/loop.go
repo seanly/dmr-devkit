@@ -261,15 +261,13 @@ func (a *Agent) run(ctx context.Context, tapeName, prompt string, historyAfterEn
 	if err := a.appendSystemPromptEntry(tapeName, systemPrompt); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)
 	}
-	// Include multi-modal parts in the user message entry when provided
+	// Include multi-modal parts in the user message entry when provided.
+	// Images marked OmitImageFromTape stay on the provider request only.
 	userPayload := map[string]any{"role": "user", "content": prompt}
 	if mode != nil && len(mode.promptParts) > 0 {
-		parts := make([]any, 0, len(mode.promptParts)+1)
-		parts = append(parts, map[string]any{"type": "text", "text": prompt})
-		for _, p := range mode.promptParts {
-			parts = append(parts, provider.ContentPartToMap(p))
+		if parts := provider.UserTapeParts(prompt, mode.promptParts); len(parts) > 0 {
+			userPayload["parts"] = parts
 		}
-		userPayload["parts"] = parts
 	}
 	if err := a.tape.AppendEntry(tapeName, tape.NewMessageEntry(userPayload)); err != nil {
 		slog.Warn("tape append failed", "tape", tapeName, "error", err)

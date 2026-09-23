@@ -39,6 +39,9 @@ type AgentNode struct {
 	AllowedTools *[]string
 	// Model, when non-empty, selects the ChatClient for TapeName via [agent.Agent.SwitchModel].
 	Model string
+	// ContextJSON is a JSON object merged into the agent run context.
+	// Keys already set by SystemPrompt are kept. Used for _dmr_prompt_parts.
+	ContextJSON string
 }
 
 // Name returns the node name; satisfies [workflow.Node].
@@ -188,14 +191,9 @@ func (a *AgentNode) Run(ctx context.Context, wctx *workflow.Context, input any) 
 // per-step system prompt (via RunWithOpts/contextJSON), and optional model routing.
 func (a *AgentNode) runInvocation(ctx context.Context, wctx *workflow.Context, prompt string, opts agent.RunOptions) (*agent.Result, error) {
 	tapeName := resolveWorkflowTape(a.TapeName, wctx)
-	var ctxJSON string
-	if s := strings.TrimSpace(a.SystemPrompt); s != "" {
-		payload := map[string]any{agent.ContextKeySystemPromptOverride: s}
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return nil, fmt.Errorf("devkit workflow node: marshal context: %w", err)
-		}
-		ctxJSON = string(b)
+	ctxJSON, err := mergeAgentContext(a.SystemPrompt, a.ContextJSON)
+	if err != nil {
+		return nil, err
 	}
 	if m := strings.TrimSpace(a.Model); m != "" {
 		if err := a.Kit.Agent.SwitchModel(tapeName, m); err != nil {
@@ -203,6 +201,35 @@ func (a *AgentNode) runInvocation(ctx context.Context, wctx *workflow.Context, p
 		}
 	}
 	return a.Kit.Agent.RunWithOptsAndToolsOptions(ctx, tapeName, prompt, 0, 0, a.AllowedTools, ctxJSON, opts)
+}
+
+// mergeAgentContext combines the node system prompt with an optional JSON object.
+// A non-empty SystemPrompt wins over the same key inside extraJSON.
+func mergeAgentContext(systemPrompt, extraJSON string) (string, error) {
+	payload := map[string]any{}
+	if s := strings.TrimSpace(systemPrompt); s != "" {
+		payload[agent.ContextKeySystemPromptOverride] = s
+	}
+	if extra := strings.TrimSpace(extraJSON); extra != "" {
+		var more map[string]any
+		if err := json.Unmarshal([]byte(extra), &more); err != nil {
+			return "", fmt.Errorf("devkit workflow node: context json: %w", err)
+		}
+		for k, v := range more {
+			if k == agent.ContextKeySystemPromptOverride && strings.TrimSpace(systemPrompt) != "" {
+				continue
+			}
+			payload[k] = v
+		}
+	}
+	if len(payload) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("devkit workflow node: marshal context: %w", err)
+	}
+	return string(b), nil
 }
 
 // RunWorkflow executes a [workflow.Runner] (Sequential, Parallel, etc.)
